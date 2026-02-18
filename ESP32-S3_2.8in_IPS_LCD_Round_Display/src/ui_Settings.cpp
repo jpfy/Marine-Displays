@@ -22,6 +22,9 @@ lv_obj_t *ui_AutoScrollLabel = NULL;
 lv_obj_t *ui_BuzzerCooldownDrop = NULL;
 lv_obj_t *ui_BuzzerCooldownLabel = NULL;
 
+// Timer to periodically sync settings with values (in case web page changes them)
+static lv_timer_t *settings_refresh_timer = NULL;
+
 // Global buzzer mode: 0 = Off, 1 = Global, 2 = Per-screen
 int buzzer_mode = 0;
 uint16_t buzzer_cooldown_sec = 60; // default 60s
@@ -98,6 +101,40 @@ extern "C" void update_ip_address(void)
     }
 }
 
+// Update all settings dropdowns to reflect current values
+// (in case they were changed via web interface while Settings screen is open)
+extern "C" void update_settings_values(void)
+{
+    // Update IP address
+    update_ip_address();
+    
+    // Update buzzer mode dropdown
+    if (ui_BuzzerSwitch != NULL) {
+        lv_dropdown_set_selected(ui_BuzzerSwitch, (uint16_t)buzzer_mode);
+    }
+    
+    // Update buzzer cooldown dropdown
+    if (ui_BuzzerCooldownDrop != NULL) {
+        uint16_t sel = 0;
+        if (buzzer_cooldown_sec == 10) sel = 0;
+        else if (buzzer_cooldown_sec == 30) sel = 1;
+        else if (buzzer_cooldown_sec == 60) sel = 2;
+        else if (buzzer_cooldown_sec == 120) sel = 3;
+        else if (buzzer_cooldown_sec == 300) sel = 4;
+        lv_dropdown_set_selected(ui_BuzzerCooldownDrop, sel);
+    }
+    
+    // Update auto-scroll dropdown
+    if (ui_AutoScrollDrop != NULL) {
+        extern uint16_t auto_scroll_sec;
+        uint16_t sel = 0;
+        if (auto_scroll_sec == 5) sel = 1;
+        else if (auto_scroll_sec == 10) sel = 2;
+        else if (auto_scroll_sec == 30) sel = 3;
+        lv_dropdown_set_selected(ui_AutoScrollDrop, sel);
+    }
+}
+
 // Event handler for back button (swipe up)
 static void back_button_event_cb(lv_event_t *e)
 {
@@ -150,8 +187,24 @@ extern "C" void ui_Settings_screen_init(void)
     lv_obj_add_event_cb(ui_Settings, swipe_up_event_cb, LV_EVENT_PRESSING, NULL);
     lv_obj_add_event_cb(ui_Settings, swipe_up_event_cb, LV_EVENT_RELEASED, NULL);
     
-    // Update IP address when screen loads
-    lv_obj_add_event_cb(ui_Settings, [](lv_event_t *e) { update_ip_address(); }, LV_EVENT_SCREEN_LOADED, NULL);
+    // Update all settings values when screen loads (to sync with any web changes)
+    lv_obj_add_event_cb(ui_Settings, [](lv_event_t *e) {
+        update_settings_values();
+        // Start periodic refresh timer (every 2 seconds) while Settings screen is visible
+        if (settings_refresh_timer == NULL) {
+            settings_refresh_timer = lv_timer_create([](lv_timer_t *t) {
+                update_settings_values();
+            }, 2000, NULL);
+        }
+    }, LV_EVENT_SCREEN_LOADED, NULL);
+    
+    // Stop refresh timer when leaving Settings screen
+    lv_obj_add_event_cb(ui_Settings, [](lv_event_t *e) {
+        if (settings_refresh_timer != NULL) {
+            lv_timer_del(settings_refresh_timer);
+            settings_refresh_timer = NULL;
+        }
+    }, LV_EVENT_SCREEN_UNLOADED, NULL);
     
     printf("Settings swipe events registered\n");
     
