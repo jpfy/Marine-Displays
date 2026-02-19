@@ -1339,10 +1339,7 @@ void handle_save_gauges() {
                 String iconValue = config_server.arg(iconKey);
                 iconValue.replace("S://", "S:/");
                 while (iconValue.indexOf("//") != -1) iconValue.replace("//", "/");
-                // Detect if the icon path actually changed; if so, request a reboot
-                if (strncmp(screen_configs[s].icon_paths[g], iconValue.c_str(), 127) != 0) {
-                    reboot_needed = true;
-                }
+                // Icon changes are now handled by hot-apply, no reboot needed
                 strncpy(screen_configs[s].icon_paths[g], iconValue.c_str(), 127);
                 screen_configs[s].icon_paths[g][127] = '\0';
                 // Save icon position (does not require reboot)
