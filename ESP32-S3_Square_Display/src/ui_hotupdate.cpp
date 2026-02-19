@@ -216,7 +216,10 @@ bool apply_all_screen_visuals() {
             if (top_icon) lv_obj_add_flag(top_icon, LV_OBJ_FLAG_HIDDEN);
             if (bot_icon) lv_obj_add_flag(bot_icon, LV_OBJ_FLAG_HIDDEN);
             // Recreate dual display with updated settings (reads from screen_configs)
-            dual_number_display_create(s);
+            dual_number_display_create(s, 
+                                        screen_configs[s].dual_top_font_size, screen_configs[s].dual_top_font_color,
+                                        screen_configs[s].dual_bottom_font_size, screen_configs[s].dual_bottom_font_color,
+                                        screen_configs[s].number_bg_color);
             any = true;
         } else if (screen_configs[s].display_type == DISPLAY_TYPE_QUAD) {
             // Destroy other display types first
@@ -234,7 +237,12 @@ bool apply_all_screen_visuals() {
             if (top_icon) lv_obj_add_flag(top_icon, LV_OBJ_FLAG_HIDDEN);
             if (bot_icon) lv_obj_add_flag(bot_icon, LV_OBJ_FLAG_HIDDEN);
             // Recreate quad display with updated settings (reads from screen_configs)
-            quad_number_display_create(s);
+            quad_number_display_create(s,
+                                        screen_configs[s].quad_tl_font_size, screen_configs[s].quad_tl_font_color,
+                                        screen_configs[s].quad_tr_font_size, screen_configs[s].quad_tr_font_color,
+                                        screen_configs[s].quad_bl_font_size, screen_configs[s].quad_bl_font_color,
+                                        screen_configs[s].quad_br_font_size, screen_configs[s].quad_br_font_color,
+                                        screen_configs[s].number_bg_color);
             any = true;
         } else if (screen_configs[s].display_type == DISPLAY_TYPE_GAUGE_NUMBER) {
             ESP_LOGI(TAG_UIHOT, "[GAUGE_NUM] Handling screen=%d as GAUGE_NUMBER", s);
