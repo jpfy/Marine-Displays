@@ -406,7 +406,7 @@ void load_preferences() {
     if (preferences.begin(SETTINGS_NAMESPACE, true)) {
         saved_ssid = preferences.getString("ssid", "");
         saved_password = preferences.getString("password", "");
-        saved_signalk_ip = preferences.getString("signalk_ip", "");
+        saved_signalk_ip = preferences.getString("signalk_ip", "openplotter.local");
         saved_signalk_port = preferences.getUShort("signalk_port", 0);
         saved_hostname = preferences.getString("hostname", "");
         // Load auto-scroll interval (seconds)
@@ -463,7 +463,7 @@ void load_preferences() {
         screen_configs[s].display_type = DISPLAY_TYPE_GAUGE;
         // number display defaults (background uses bg_image field: empty/"Default" = default, bin path = file, "Custom Color" = color)
         strncpy(screen_configs[s].number_bg_color, "#000000", 7);
-        screen_configs[s].number_font_size = 1;  // Medium (48pt)
+        screen_configs[s].number_font_size = 0;  // Large (96pt)
         strncpy(screen_configs[s].number_font_color, "#FFFFFF", 7);
         screen_configs[s].number_path[0] = '\0';  // Empty path
         // dual display defaults
@@ -767,18 +767,12 @@ void handle_gauges_page() {
         html += "<div style='margin-bottom:8px;'><label>Font Size: <select name='number_font_size_" + String(s) + "'>";
         html += "<option value='0'";
         if (screen_configs[s].number_font_size == 0) html += " selected";
-        html += ">Small (48pt)</option>";
+        html += ">Large (96pt)</option>";
         html += "<option value='1'";
         if (screen_configs[s].number_font_size == 1) html += " selected";
-        html += ">Medium (72pt)</option>";
+        html += ">X-Large (120pt)</option>";
         html += "<option value='2'";
         if (screen_configs[s].number_font_size == 2) html += " selected";
-        html += ">Large (96pt)</option>";
-        html += "<option value='3'";
-        if (screen_configs[s].number_font_size == 3) html += " selected";
-        html += ">X-Large (120pt)</option>";
-        html += "<option value='4'";
-        if (screen_configs[s].number_font_size == 4) html += " selected";
         html += ">XX-Large (144pt)</option>";
         html += "</select></label></div>";
         
@@ -2083,6 +2077,15 @@ std::vector<String> get_all_signalk_paths() {
         if (center_path.length() > 0 && unique_paths.find(center_path) == unique_paths.end()) {
             unique_paths.insert(center_path);
             all_paths.push_back(center_path);
+        }
+    }
+    
+    // Add graph display second series paths
+    for (int s = 0; s < NUM_SCREENS; s++) {
+        String graph_path_2 = String(screen_configs[s].graph_path_2);
+        if (graph_path_2.length() > 0 && unique_paths.find(graph_path_2) == unique_paths.end()) {
+            unique_paths.insert(graph_path_2);
+            all_paths.push_back(graph_path_2);
         }
     }
     
