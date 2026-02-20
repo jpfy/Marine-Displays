@@ -85,17 +85,12 @@ bool apply_icons_for_screen(int s) {
     if (top) {
         const char *p = screen_configs[s].icon_paths[0];
         if (p && p[0] != '\0') {
-            // Show icon: set source, restore opacity, size, and position
             lv_img_set_src(top, p);
             lv_obj_set_style_img_opa(top, LV_OPA_COVER, 0);
-            lv_obj_set_size(top, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
             lv_obj_clear_flag(top, LV_OBJ_FLAG_HIDDEN);
         } else {
-            // Hide icon completely: opacity transparent + hidden flag + off-screen + zero size
             lv_obj_set_style_img_opa(top, LV_OPA_TRANSP, 0);
             lv_obj_add_flag(top, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_set_pos(top, -5000, -5000);
-            lv_obj_set_size(top, 0, 0);
         }
         lv_obj_invalidate(top);
         any = true;
@@ -105,22 +100,15 @@ bool apply_icons_for_screen(int s) {
         if (!screen_configs[s].show_bottom) {
             lv_obj_set_style_img_opa(bot, LV_OPA_TRANSP, 0);
             lv_obj_add_flag(bot, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_set_pos(bot, -5000, -5000);
-            lv_obj_set_size(bot, 0, 0);
         } else {
             const char *p = screen_configs[s].icon_paths[1];
             if (p && p[0] != '\0') {
-                // Show icon: set source, restore opacity, size
                 lv_img_set_src(bot, p);
                 lv_obj_set_style_img_opa(bot, LV_OPA_COVER, 0);
-                lv_obj_set_size(bot, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
                 lv_obj_clear_flag(bot, LV_OBJ_FLAG_HIDDEN);
             } else {
-                // Hide icon completely
                 lv_obj_set_style_img_opa(bot, LV_OPA_TRANSP, 0);
                 lv_obj_add_flag(bot, LV_OBJ_FLAG_HIDDEN);
-                lv_obj_set_pos(bot, -5000, -5000);
-                lv_obj_set_size(bot, 0, 0);
             }
             lv_obj_invalidate(bot);
         }
