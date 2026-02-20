@@ -8,7 +8,7 @@ https://www.waveshare.com/esp32-s3-touch-lcd-2.8c.htm?srsltid=AfmBOoooX16CI5PqCO
 ESP32-S3 4inch Display Development Board, 480×480, 32-Bit LX7 Dual-Core Processor, Up To 240MHz Frequency, Supports WiFi & Bluetooth, With Onboard Antenna, ESP32 With Display
 https://www.waveshare.com/esp32-s3-touch-lcd-4.htm
 
-The round display, i'm focusing more on it, listening to SignalK paths and basically creating some sort of smart display, for different engine information, battery, wind etc.
+The round display, i'm focusing more on it following a gauge-type idea, listening to SignalK paths and creating a smart display, for different engine information, battery, wind etc.
 
 For the square display, the first set of code will build on the round display, with more options for things like number diplays, graphs and meta data pulled in from SK. I will also look at NMEA2000 if there is demand for this.
 
