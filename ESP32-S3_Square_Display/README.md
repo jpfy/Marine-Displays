@@ -1,5 +1,5 @@
 Boating with the Baileys
-Jan 2026
+Feb 2026
 
 ESP32 customisable display using data from SignalK. 
 ------------------------------
@@ -11,10 +11,16 @@ It features:
 - Global or Per Screen buzzer
 - WebUI driven
 - Touch and non Touch options
+- Number display with different display options, Single large display, Dual screen, Quad Screen
+- Guage with added number display (Wind instrument style)
+- Graph display with the option for an additional data source
 
-ESP32-S3 2.8" IPS LCD Round Display
+ESP32-S3 Square Display
 
-This folder contains files and documentation for building the ESP32-S3 based 2.8" IPS LCD round display.
+The hardware used:
+ESP32-S3 4inch Display Development Board, 480×480, 32-Bit LX7 Dual-Core Processor, Up To 240MHz Frequency, Supports WiFi & Bluetooth, With Onboard Antenna, ESP32 With Display https://www.waveshare.com/esp32-s3-touch-lcd-4.htm
+
+This folder contains files and documentation for building the ESP32-S3 based square display.
 
 Contents:
 - PlatformIO project sources (refer to root `src/`)
@@ -25,15 +31,15 @@ Build and upload instructions:
 
 See the main project root for full source code and assets.
 
-Use and SD cards for your icons and images, Store the icons and png (ideally monochrome images) and then you can change the colours. Convert your larger background images to bin files. There is a convert script in the project that will help you in you cant do this in your image tool.
+Use an SD card for your icons and images. Store icons and PNGs (ideally monochrome images) so you can recolor them in the UI. Convert larger background images to `.bin` files. There is a conversion script in the project to help with this.
 
-The display is 480x480, so make your background images this size
+The display is 480x480, so make your background images this size.
 
-Use 70x70 for icons
+Use 70x70 for icons.
 
 I used Figma to create my images.
 
-Save them on the sd card in a folder called /assests
+Save them on the SD card in a folder called `/assets`.
 
 Video coming soon of the whole feature set and setup.
 
