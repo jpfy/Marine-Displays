@@ -12,9 +12,9 @@ It features:
 - WebUI driven
 - Touch and non Touch options
 
-ESP32-S3 2.8" IPS LCD Round Display
+NOTE -  TESTINGS FOR ESP32-S3 2.1" Display
 
-This folder contains files and documentation for building the ESP32-S3 based 2.8" IPS LCD round display.
+This folder contains files and documentation for building the ESP32-S3 based 2.1" Display.
 
 Contents:
 - PlatformIO project sources (refer to root `src/`)
