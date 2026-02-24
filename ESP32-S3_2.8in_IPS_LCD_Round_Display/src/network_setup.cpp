@@ -952,6 +952,7 @@ void handle_save_gauges() {
             if (nvs_enum_err == ESP_OK) {
                 Serial.println("[NVS ENUM] Listing all keys in 'gaugeconfig' namespace after icon/zone save:");
                 nvs_iterator_t it = NULL;
+#if ESP_IDF_VERSION_MAJOR >= 5
                 esp_err_t enum_find_err = nvs_entry_find(NULL, PREF_NAMESPACE, NVS_TYPE_ANY, &it);
                 while (enum_find_err == ESP_OK && it != NULL) {
                     nvs_entry_info_t info;
@@ -959,6 +960,15 @@ void handle_save_gauges() {
                     Serial.printf("[NVS ENUM] key: %s, type: %d\n", info.key, info.type);
                     enum_find_err = nvs_entry_next(&it);
                 }
+#else
+                it = nvs_entry_find(NULL, PREF_NAMESPACE, NVS_TYPE_ANY);
+                while (it != NULL) {
+                    nvs_entry_info_t info;
+                    nvs_entry_info(it, &info);
+                    Serial.printf("[NVS ENUM] key: %s, type: %d\n", info.key, info.type);
+                    it = nvs_entry_next(it);
+                }
+#endif
                 Serial.println("[NVS ENUM] End of key list.");
                 nvs_close(nvs_enum_handle);
             } else {

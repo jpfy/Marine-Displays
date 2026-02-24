@@ -344,8 +344,10 @@ void ST7701_Init()
         .pclk_active_neg = ESP_PANEL_LCD_RGB_PCLK_ACTIVE_NEG,                                                                       
       },
     },
-    .data_width = ESP_PANEL_LCD_RGB_DATA_WIDTH,                                                   
-    .bits_per_pixel = ESP_PANEL_LCD_RGB_PIXEL_BITS,                                               
+    .data_width = ESP_PANEL_LCD_RGB_DATA_WIDTH,
+#if ESP_IDF_VERSION_MAJOR >= 5
+    .bits_per_pixel = ESP_PANEL_LCD_RGB_PIXEL_BITS,
+#endif
     .num_fbs = ESP_PANEL_LCD_RGB_FRAME_BUF_NUM,                                                   
     .bounce_buffer_size_px = ESP_PANEL_LCD_RGB_BOUNCE_BUF_SIZE,                                   
     .psram_trans_align = 64,                                                                      
@@ -376,12 +378,14 @@ void ST7701_Init()
       .fb_in_psram = true,                                                                        // 如果启用此标志，帧缓冲区将优先从PSRAM分配
     },
   };
-  esp_lcd_new_rgb_panel(&rgb_config, &panel_handle); 
+  esp_lcd_new_rgb_panel(&rgb_config, &panel_handle);
+#if ESP_IDF_VERSION_MAJOR >= 5
   // Re-enable vsync callback to track timing
   esp_lcd_rgb_panel_event_callbacks_t cbs = {
     .on_vsync = example_on_vsync_event,
   };
   esp_lcd_rgb_panel_register_event_callbacks(panel_handle, &cbs, NULL);
+#endif
   esp_lcd_panel_reset(panel_handle);
   esp_lcd_panel_init(panel_handle);
 }
@@ -434,11 +438,16 @@ void LCD_addWindow(uint16_t Xstart, uint16_t Ystart, uint16_t Xend, uint16_t Yen
 uint8_t LCD_Backlight = 50;
 void Backlight_Init()
 {
-  ledcAttach(LCD_Backlight_PIN, Frequency, Resolution);    
-  Set_Backlight(LCD_Backlight);      //0~100               
+#if ESP_IDF_VERSION_MAJOR >= 5
+  ledcAttach(LCD_Backlight_PIN, Frequency, Resolution);
+#else
+  ledcSetup(PWM_Channel, Frequency, Resolution);
+  ledcAttachPin(LCD_Backlight_PIN, PWM_Channel);
+#endif
+  Set_Backlight(LCD_Backlight);      //0~100
 }
 
-void Set_Backlight(uint8_t Light)                        //
+void Set_Backlight(uint8_t Light)
 {
   if(Light > Backlight_MAX || Light < 0)
     printf("Set Backlight parameters in the range of 0 to 100 \r\n");
@@ -446,7 +455,11 @@ void Set_Backlight(uint8_t Light)                        //
     uint32_t Backlight = Light*10;
     if(Backlight == 1000)
       Backlight = 1024;
+#if ESP_IDF_VERSION_MAJOR >= 5
     ledcWrite(LCD_Backlight_PIN, Backlight);
+#else
+    ledcWrite(PWM_Channel, Backlight);
+#endif
   }
 }
 
