@@ -505,7 +505,7 @@ void load_preferences() {
                     bool valid = true;
                     for (int g = 0; g < 2 && valid; ++g) {
                         for (int p = 0; p < 5; ++p) {
-                            if (screen_configs[s].cal[g][p].angle < 0 || screen_configs[s].cal[g][p].angle > 360) {
+                            if (screen_configs[s].cal[g][p].angle < -360 || screen_configs[s].cal[g][p].angle > 360) {
                                 valid = false; break;
                             }
                         }

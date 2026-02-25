@@ -329,7 +329,7 @@ void ST7701_Init()
 
   //  RGB
   esp_lcd_rgb_panel_config_t rgb_config = {
-    .clk_src = LCD_CLK_SRC_PLL160M,                                                               // Use 160M PLL for more stable timing
+    .clk_src = LCD_CLK_SRC_PLL160M,
     .timings =  {                                                                                 
       .pclk_hz = ESP_PANEL_LCD_RGB_TIMING_FREQ_HZ,                                               
       .h_res = ESP_PANEL_LCD_WIDTH,                                                              
@@ -345,38 +345,35 @@ void ST7701_Init()
       },
     },
     .data_width = ESP_PANEL_LCD_RGB_DATA_WIDTH,
+    /* NOTE: bits_per_pixel, num_fbs, bounce_buffer_size_px not available in this IDF version */
     .psram_trans_align = 64,
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 2, 0)
-    .num_fbs = ESP_PANEL_LCD_RGB_FRAME_BUF_NUM,
-    .bounce_buffer_size_px = ESP_PANEL_LCD_RGB_BOUNCE_BUF_SIZE,
-#endif
     .hsync_gpio_num = ESP_PANEL_LCD_PIN_NUM_RGB_HSYNC,                                            
     .vsync_gpio_num = ESP_PANEL_LCD_PIN_NUM_RGB_VSYNC,                                            
     .de_gpio_num = ESP_PANEL_LCD_PIN_NUM_RGB_DE,                                                  
-    .pclk_gpio_num = ESP_PANEL_LCD_PIN_NUM_RGB_PCLK,                                              
-    .data_gpio_nums = {                                                                                                                           
-      ESP_PANEL_LCD_PIN_NUM_RGB_DATA0,                                                            
-      ESP_PANEL_LCD_PIN_NUM_RGB_DATA1,                                                            
-      ESP_PANEL_LCD_PIN_NUM_RGB_DATA2,                                                            
-      ESP_PANEL_LCD_PIN_NUM_RGB_DATA3,                                                            
-      ESP_PANEL_LCD_PIN_NUM_RGB_DATA4,                                                            
-      ESP_PANEL_LCD_PIN_NUM_RGB_DATA5,                                                            
-      ESP_PANEL_LCD_PIN_NUM_RGB_DATA6,                                                            
-      ESP_PANEL_LCD_PIN_NUM_RGB_DATA7,                                                            
-      ESP_PANEL_LCD_PIN_NUM_RGB_DATA8,                                                            
-      ESP_PANEL_LCD_PIN_NUM_RGB_DATA9,                                                            
-      ESP_PANEL_LCD_PIN_NUM_RGB_DATA10,                                                           
-      ESP_PANEL_LCD_PIN_NUM_RGB_DATA11,                                                           
-      ESP_PANEL_LCD_PIN_NUM_RGB_DATA12,                                                           
-      ESP_PANEL_LCD_PIN_NUM_RGB_DATA13,                                                           
-      ESP_PANEL_LCD_PIN_NUM_RGB_DATA14,                                                           
-      ESP_PANEL_LCD_PIN_NUM_RGB_DATA15,                                                           
-    },
+    .pclk_gpio_num = ESP_PANEL_LCD_PIN_NUM_RGB_PCLK,
+    .data_gpio_nums = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 },
     .disp_gpio_num = ESP_PANEL_LCD_PIN_NUM_RGB_DISP,
-    .flags = {                                                                                    
-      .fb_in_psram = true,                                                                        // 如果启用此标志，帧缓冲区将优先从PSRAM分配
-    },
   };
+
+  rgb_config.data_gpio_nums[0]  = ESP_PANEL_LCD_PIN_NUM_RGB_DATA0;
+  rgb_config.data_gpio_nums[1]  = ESP_PANEL_LCD_PIN_NUM_RGB_DATA1;
+  rgb_config.data_gpio_nums[2]  = ESP_PANEL_LCD_PIN_NUM_RGB_DATA2;
+  rgb_config.data_gpio_nums[3]  = ESP_PANEL_LCD_PIN_NUM_RGB_DATA3;
+  rgb_config.data_gpio_nums[4]  = ESP_PANEL_LCD_PIN_NUM_RGB_DATA4;
+  rgb_config.data_gpio_nums[5]  = ESP_PANEL_LCD_PIN_NUM_RGB_DATA5;
+  rgb_config.data_gpio_nums[6]  = ESP_PANEL_LCD_PIN_NUM_RGB_DATA6;
+  rgb_config.data_gpio_nums[7]  = ESP_PANEL_LCD_PIN_NUM_RGB_DATA7;
+  rgb_config.data_gpio_nums[8]  = ESP_PANEL_LCD_PIN_NUM_RGB_DATA8;
+  rgb_config.data_gpio_nums[9]  = ESP_PANEL_LCD_PIN_NUM_RGB_DATA9;
+  rgb_config.data_gpio_nums[10] = ESP_PANEL_LCD_PIN_NUM_RGB_DATA10;
+  rgb_config.data_gpio_nums[11] = ESP_PANEL_LCD_PIN_NUM_RGB_DATA11;
+  rgb_config.data_gpio_nums[12] = ESP_PANEL_LCD_PIN_NUM_RGB_DATA12;
+  rgb_config.data_gpio_nums[13] = ESP_PANEL_LCD_PIN_NUM_RGB_DATA13;
+  rgb_config.data_gpio_nums[14] = ESP_PANEL_LCD_PIN_NUM_RGB_DATA14;
+  rgb_config.data_gpio_nums[15] = ESP_PANEL_LCD_PIN_NUM_RGB_DATA15;
+
+  rgb_config.flags.fb_in_psram = true;
+
   esp_lcd_new_rgb_panel(&rgb_config, &panel_handle);
 #if ESP_IDF_VERSION_MAJOR >= 5
   // Re-enable vsync callback to track timing
