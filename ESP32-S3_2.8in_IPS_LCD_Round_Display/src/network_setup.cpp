@@ -598,14 +598,6 @@ void handle_gauges_page() {
         // consume the skip flag and keep current in-memory configs
         skip_next_load_preferences = false;
     }
-    Serial.println("[DEBUG] handle_gauges_page() - gauge_cal values sent to HTML:");
-    for (int s = 0; s < NUM_SCREENS; ++s) {
-        for (int g = 0; g < 2; ++g) {
-            for (int p = 0; p < 5; ++p) {
-                Serial.printf("[DEBUG] gauge_cal[%d][%d][%d]: angle=%d value=%.2f\n", s, g, p, gauge_cal[s][g][p].angle, gauge_cal[s][g][p].value);
-            }
-        }
-    }
     // Start chunked HTTP response immediately — avoids holding the whole page (~50KB) in RAM at once.
     config_server.setContentLength(CONTENT_LENGTH_UNKNOWN);
     config_server.send(200, "text/html; charset=utf-8", "");
@@ -816,34 +808,6 @@ void handle_gauges_page() {
 }
 
 void handle_save_gauges() {
-            // Debug: print all POSTed keys and values
-            Serial.println("[DEBUG] POSTED FORM KEYS AND VALUES:");
-            int nArgs = config_server.args();
-            for (int i = 0; i < nArgs; ++i) {
-                String key = config_server.argName(i);
-                String val = config_server.arg(i);
-                Serial.printf("[POST] %s = '%s'\n", key.c_str(), val.c_str());
-            }
-        Serial.println("[DEBUG] handle_save_gauges() POST values and gauge_cal after POST:");
-        for (int s = 0; s < NUM_SCREENS; ++s) {
-            for (int g = 0; g < 2; ++g) {
-                for (int p = 0; p < 5; ++p) {
-                    String angleKey = "angle_" + String(s) + "_" + String(g) + "_" + String(p);
-                    String valueKey = "value_" + String(s) + "_" + String(g) + "_" + String(p);
-                    Serial.printf("[DEBUG] POST: %s='%s', %s='%s'\n", angleKey.c_str(), config_server.arg(angleKey).c_str(), valueKey.c_str(), config_server.arg(valueKey).c_str());
-                    Serial.printf("[DEBUG] gauge_cal[%d][%d][%d]: angle=%d value=%.2f\n", s, g, p, gauge_cal[s][g][p].angle, gauge_cal[s][g][p].value);
-                }
-            }
-        }
-        Serial.println("[DEBUG] handle_gauges_page() - gauge_cal values sent to GUI:");
-        for (int s = 0; s < NUM_SCREENS; ++s) {
-            for (int g = 0; g < 2; ++g) {
-                for (int p = 0; p < 5; ++p) {
-                    Serial.printf("[DEBUG] gauge_cal[%d][%d][%d]: angle=%d value=%.2f\n", s, g, p, gauge_cal[s][g][p].angle, gauge_cal[s][g][p].value);
-                }
-            }
-        }
-    Serial.println("[DEBUG] handle_save_gauges() called");
     if (config_server.method() == HTTP_POST) {
         bool reboot_needed = false;
         for (int s = 0; s < NUM_SCREENS; ++s) {
@@ -906,20 +870,8 @@ void handle_save_gauges() {
                 for (int p = 0; p < 5; ++p) {
                     String angleKey = "angle_" + String(s) + "_" + String(g) + "_" + String(p);
                     String valueKey = "value_" + String(s) + "_" + String(g) + "_" + String(p);
-                    String angleStr = config_server.arg(angleKey);
-                    String valueStr = config_server.arg(valueKey);
-                    Serial.printf("[DEBUG] POST: %s='%s', %s='%s'\n", angleKey.c_str(), angleStr.c_str(), valueKey.c_str(), valueStr.c_str());
-                    gauge_cal[s][g][p].angle = angleStr.toInt();
-                    gauge_cal[s][g][p].value = valueStr.toFloat();
-                }
-            }
-        }
-        // Print updated gauge_cal values before saving
-        Serial.println("[DEBUG] gauge_cal values after POST:");
-        for (int s = 0; s < NUM_SCREENS; ++s) {
-            for (int g = 0; g < 2; ++g) {
-                for (int p = 0; p < 5; ++p) {
-                    Serial.printf("[DEBUG] gauge_cal[%d][%d][%d]: angle=%d value=%.2f\n", s, g, p, gauge_cal[s][g][p].angle, gauge_cal[s][g][p].value);
+                    gauge_cal[s][g][p].angle = config_server.arg(angleKey).toInt();
+                    gauge_cal[s][g][p].value = config_server.arg(valueKey).toFloat();
                 }
             }
         }
@@ -956,40 +908,6 @@ void handle_save_gauges() {
             Serial.println("[HOTAPPLY] apply_all_screen_visuals() returned false — UI objects may not be present yet");
             // still set skip flag so the page reflects in-memory state; we will not reboot
             skip_next_load_preferences = true;
-        }
-        // Debug: print updated screen_configs including buzzer flags to verify checkboxes
-        Serial.println("[DEBUG] Screen configs after save (including buzzer flags):");
-        dump_screen_configs();
-        
-        // NVS key enumeration debug (after all saves, before reboot)
-        {
-            nvs_handle_t nvs_enum_handle;
-            esp_err_t nvs_enum_err = nvs_open(PREF_NAMESPACE, NVS_READONLY, &nvs_enum_handle);
-            if (nvs_enum_err == ESP_OK) {
-                Serial.println("[NVS ENUM] Listing all keys in 'gaugeconfig' namespace after icon/zone save:");
-                nvs_iterator_t it = NULL;
-#if ESP_IDF_VERSION_MAJOR >= 5
-                esp_err_t enum_find_err = nvs_entry_find(NULL, PREF_NAMESPACE, NVS_TYPE_ANY, &it);
-                while (enum_find_err == ESP_OK && it != NULL) {
-                    nvs_entry_info_t info;
-                    nvs_entry_info(it, &info);
-                    Serial.printf("[NVS ENUM] key: %s, type: %d\n", info.key, info.type);
-                    enum_find_err = nvs_entry_next(&it);
-                }
-#else
-                it = nvs_entry_find(NULL, PREF_NAMESPACE, NVS_TYPE_ANY);
-                while (it != NULL) {
-                    nvs_entry_info_t info;
-                    nvs_entry_info(it, &info);
-                    Serial.printf("[NVS ENUM] key: %s, type: %d\n", info.key, info.type);
-                    it = nvs_entry_next(it);
-                }
-#endif
-                Serial.println("[NVS ENUM] End of key list.");
-                nvs_close(nvs_enum_handle);
-            } else {
-                Serial.printf("[NVS ENUM] nvs_open failed: %d\n", nvs_enum_err);
-            }
         }
         // Try to apply visual changes at runtime (hot-update). If LVGL objects are not present
         // or the update fails, fall back to reboot to ensure a clean load.
