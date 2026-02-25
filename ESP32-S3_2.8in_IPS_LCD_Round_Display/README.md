@@ -35,7 +35,9 @@ I used Figma to create my images.
 
 Save them on the sd card in a folder called /assests
 
-Video coming soon of the whole feature set and setup.
+On first boot, the display creates an SSID called ESP32-RoundDisplay with the password: 12345678 - Browse to 192.168.4.1 to configure your display.
+
+Video of the round display - Building Custom Marine Displays with ESP32 & SignalK (Gauges, Dynamic Icons & Alerts) https://youtu.be/d4MlVSbn_wI
 
 The Baileys
 
