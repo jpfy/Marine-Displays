@@ -345,17 +345,15 @@ void ST7701_Init()
       },
     },
     .data_width = ESP_PANEL_LCD_RGB_DATA_WIDTH,
-#if ESP_IDF_VERSION_MAJOR >= 5
-    .bits_per_pixel = ESP_PANEL_LCD_RGB_PIXEL_BITS,
+    .psram_trans_align = 64,
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 2, 0)
+    .num_fbs = ESP_PANEL_LCD_RGB_FRAME_BUF_NUM,
+    .bounce_buffer_size_px = ESP_PANEL_LCD_RGB_BOUNCE_BUF_SIZE,
 #endif
-    .num_fbs = ESP_PANEL_LCD_RGB_FRAME_BUF_NUM,                                                   
-    .bounce_buffer_size_px = ESP_PANEL_LCD_RGB_BOUNCE_BUF_SIZE,                                   
-    .psram_trans_align = 64,                                                                      
     .hsync_gpio_num = ESP_PANEL_LCD_PIN_NUM_RGB_HSYNC,                                            
     .vsync_gpio_num = ESP_PANEL_LCD_PIN_NUM_RGB_VSYNC,                                            
     .de_gpio_num = ESP_PANEL_LCD_PIN_NUM_RGB_DE,                                                  
     .pclk_gpio_num = ESP_PANEL_LCD_PIN_NUM_RGB_PCLK,                                              
-    .disp_gpio_num = ESP_PANEL_LCD_PIN_NUM_RGB_DISP,                                              
     .data_gpio_nums = {                                                                                                                           
       ESP_PANEL_LCD_PIN_NUM_RGB_DATA0,                                                            
       ESP_PANEL_LCD_PIN_NUM_RGB_DATA1,                                                            
@@ -374,6 +372,7 @@ void ST7701_Init()
       ESP_PANEL_LCD_PIN_NUM_RGB_DATA14,                                                           
       ESP_PANEL_LCD_PIN_NUM_RGB_DATA15,                                                           
     },
+    .disp_gpio_num = ESP_PANEL_LCD_PIN_NUM_RGB_DISP,
     .flags = {                                                                                    
       .fb_in_psram = true,                                                                        // 如果启用此标志，帧缓冲区将优先从PSRAM分配
     },
