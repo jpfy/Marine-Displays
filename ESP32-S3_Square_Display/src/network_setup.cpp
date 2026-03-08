@@ -1862,12 +1862,41 @@ void handle_save_gauges() {
         }
         // Attempt to write per-screen binary configs to SD immediately so toggles
         // (like show_bottom) persist even if NVS writes fail or are delayed.
+        //
+        // iRAM yield: the SDMMC DMA layer needs ~16 KB of contiguous internal RAM to
+        // issue block commands. The preceding gauges-page GET sends ~154 KB over TCP,
+        // which can consume most of iRAM through lwIP send-buffers and PCBs. Even
+        // though rst_close_client() was called, those allocations may not have been
+        // freed by the time this POST handler runs. Yielding here lets the idle task /
+        // lwIP timer task release those buffers before we touch the SD driver.
+        {
+            const size_t IRAM_MIN_FOR_SD = 30 * 1024;
+            size_t iram_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+            if (iram_free < IRAM_MIN_FOR_SD) {
+                Serial.printf("[SD SAVE] iRAM low (%u B), yielding before SD writes...\n", iram_free);
+                Serial.flush();
+                for (int w = 0; w < 8; w++) {
+                    vTaskDelay(pdMS_TO_TICKS(50));
+                    esp_task_wdt_reset();
+                    iram_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+                    if (iram_free >= IRAM_MIN_FOR_SD) break;
+                }
+                Serial.printf("[SD SAVE] iRAM after yield: %u B\n", iram_free);
+                Serial.flush();
+            }
+        }
         if (!SD_MMC.exists("/config")) SD_MMC.mkdir("/config");
         int sd_ok_count = 0;
         for (int s2 = 0; s2 < NUM_SCREENS; ++s2) {
             char sdpath[64];
             snprintf(sdpath, sizeof(sdpath), "/config/screen%d.bin", s2);
-            File sf = SD_MMC.open(sdpath, FILE_WRITE);
+            // Retry the open up to 3 times with a short yield between attempts —
+            // a single DMA stall can fail the first open even after the iRAM check.
+            File sf;
+            for (int retry = 0; retry < 3 && !sf; retry++) {
+                if (retry > 0) { vTaskDelay(pdMS_TO_TICKS(50)); esp_task_wdt_reset(); }
+                sf = SD_MMC.open(sdpath, FILE_WRITE);
+            }
             if (sf) {
                 size_t wrote = sf.write((const uint8_t *)&screen_configs[s2], sizeof(ScreenConfig));
                 sf.close();
@@ -1886,7 +1915,11 @@ void handle_save_gauges() {
         // an SD text file (one path per line) and skip save_preferences() entirely
         // when SD is healthy. WiFi/device settings don't change on this page.
         if (sd_all_ok) {
-            File spf = SD_MMC.open("/config/signalk_paths.txt", FILE_WRITE);
+            File spf;
+            for (int retry = 0; retry < 3 && !spf; retry++) {
+                if (retry > 0) { vTaskDelay(pdMS_TO_TICKS(50)); esp_task_wdt_reset(); }
+                spf = SD_MMC.open("/config/signalk_paths.txt", FILE_WRITE);
+            }
             if (spf) {
                 for (int i = 0; i < NUM_SCREENS * 2; ++i) {
                     spf.println(signalk_paths[i]);
