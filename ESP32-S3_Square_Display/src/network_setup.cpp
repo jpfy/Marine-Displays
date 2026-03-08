@@ -1875,7 +1875,10 @@ void handle_save_gauges() {
             if (iram_free < IRAM_MIN_FOR_SD) {
                 Serial.printf("[SD SAVE] iRAM low (%u B), yielding before SD writes...\n", iram_free);
                 Serial.flush();
-                for (int w = 0; w < 8; w++) {
+                // Yield for up to 2 s in 50 ms increments. The preceding gauges-page
+                // GET can consume ~12 KB of lwIP TCP buffers that the idle task needs
+                // time to release. 400 ms was insufficient for a 144 KB page send.
+                for (int w = 0; w < 40; w++) {
                     vTaskDelay(pdMS_TO_TICKS(50));
                     esp_task_wdt_reset();
                     iram_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);

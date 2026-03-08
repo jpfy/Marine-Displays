@@ -583,19 +583,23 @@ void refresh_signalk_subscriptions() {
     // Get all unique paths including number and dual displays
     std::vector<String> all_paths = get_all_signalk_paths();
 
-    // Build subscription JSON
-    DynamicJsonDocument subdoc(2048);  // Increased size to accommodate more paths
-    subdoc["context"] = "vessels.self";
-    JsonArray subs = subdoc.createNestedArray("subscribe");
+    // Build subscription JSON manually to avoid DynamicJsonDocument allocating
+    // 2048 bytes from internal iRAM on every save. DynamicJsonDocument uses malloc()
+    // which draws from the internal heap; on a device with ~10 KB iRAM headroom this
+    // fragments the heap and leaves the SDMMC DMA layer without a contiguous block.
+    // Manual string building uses PSRAM-backed Arduino String objects instead.
+    String out = "{\"context\":\"vessels.self\",\"subscribe\":[";
+    bool first = true;
     for (const String& path : all_paths) {
         if (path.length() > 0) {
-            JsonObject s = subs.createNestedObject();
-            s["path"] = path;
-            s["period"] = 0;
+            if (!first) out += ",";
+            out += "{\"path\":\"";
+            out += path;
+            out += "\",\"period\":0}";
+            first = false;
         }
     }
-    String out;
-    serializeJson(subdoc, out);
+    out += "]}";
 
     // Always queue — never call ws_client.sendTXT() directly here.
     // refresh_signalk_subscriptions() may be called from Core 1 (HTTP handler)
