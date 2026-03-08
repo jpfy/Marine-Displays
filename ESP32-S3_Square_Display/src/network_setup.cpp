@@ -457,17 +457,19 @@ void save_preferences(bool skip_screen_blobs = false) {
                 SD_MMC.remove(tmppath);
                 Serial.printf("[SD SAVE] Short write '%s', original preserved\n", sdpath);
             }
-    if (!SD_MMC.exists("/config")) SD_MMC.mkdir("/config");
-    File spf = SD_MMC.open("/config/signalk_paths.txt", FILE_WRITE);
-    if (spf) {
-        for (int i = 0; i < NUM_SCREENS * 2; ++i) {
-            spf.println(signalk_paths[i]);
+        } // end for each screen
+        if (!SD_MMC.exists("/config")) SD_MMC.mkdir("/config");
+        File spf = SD_MMC.open("/config/signalk_paths.txt", FILE_WRITE);
+        if (spf) {
+            for (int i = 0; i < NUM_SCREENS * 2; ++i) {
+                spf.println(signalk_paths[i]);
+            }
+            spf.close();
+        } else {
+            Serial.println("[SD SAVE] Failed to open /config/signalk_paths.txt for writing");
         }
-        spf.close();
-    } else {
-        Serial.println("[SD SAVE] Failed to open /config/signalk_paths.txt for writing");
-    }
-}
+    } // end if (!any_nvs_ok)
+} // end save_preferences
 
 // Load preferences and screen configs from NVS or SD fallback
 void load_preferences() {
