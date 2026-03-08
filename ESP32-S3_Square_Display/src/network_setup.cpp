@@ -441,17 +441,22 @@ void save_preferences(bool skip_screen_blobs = false) {
         Serial.println("[SD SAVE] NVS blob writes failed; saving screen configs to SD as fallback...");
         if (!SD_MMC.exists("/config")) SD_MMC.mkdir("/config");
         for (int s = 0; s < NUM_SCREENS; ++s) {
-            char sdpath[64];
-            snprintf(sdpath, sizeof(sdpath), "/config/screen%d.bin", s);
-            File f = SD_MMC.open(sdpath, FILE_WRITE);
-            if (!f) { Serial.printf("[SD SAVE] Failed to open '%s'\n", sdpath); continue; }
+            char sdpath[68];
+            char tmppath[72];
+            snprintf(sdpath,  sizeof(sdpath),  "/config/screen%d.bin", s);
+            snprintf(tmppath, sizeof(tmppath), "/config/screen%d.tmp", s);
+            File f = SD_MMC.open(tmppath, FILE_WRITE);
+            if (!f) { Serial.printf("[SD SAVE] Failed to open '%s'\n", tmppath); continue; }
             size_t written = f.write((const uint8_t *)&screen_configs[s], sizeof(ScreenConfig));
             f.close();
-            Serial.printf("[SD SAVE] Wrote '%s' -> %u bytes\n", sdpath, (unsigned)written);
-        }
-    }
-
-    // Always write SignalK paths to SD as a fallback in case Preferences/NVS fails
+            if (written == sizeof(ScreenConfig)) {
+                SD_MMC.remove(sdpath);
+                SD_MMC.rename(tmppath, sdpath);
+                Serial.printf("[SD SAVE] Wrote '%s' -> %u bytes\n", sdpath, (unsigned)written);
+            } else {
+                SD_MMC.remove(tmppath);
+                Serial.printf("[SD SAVE] Short write '%s', original preserved\n", sdpath);
+            }
     if (!SD_MMC.exists("/config")) SD_MMC.mkdir("/config");
     File spf = SD_MMC.open("/config/signalk_paths.txt", FILE_WRITE);
     if (spf) {
@@ -1868,22 +1873,20 @@ void handle_save_gauges() {
         // Attempt to write per-screen binary configs to SD immediately so toggles
         // (like show_bottom) persist even if NVS writes fail or are delayed.
         //
-        // iRAM yield: the SDMMC DMA layer needs ~16 KB of contiguous internal RAM to
-        // issue block commands. The preceding gauges-page GET sends ~154 KB over TCP,
-        // which can consume most of iRAM through lwIP send-buffers and PCBs. Even
-        // though rst_close_client() was called, those allocations may not have been
-        // freed by the time this POST handler runs. Yielding here lets the idle task /
-        // lwIP timer task release those buffers before we touch the SD driver.
+        // iRAM strategy: pause_signalk_ws() disconnects the WS (freeing ~22 KB WS
+        // receive buffer) before every SD write block. This is called here in the
+        // save handler — not just in handle_gauges_page() — because the WS reconnects
+        // seconds after each save so subsequent saves arrive with iRAM already low.
+        // Pausing here guarantees ~22 KB headroom for SDMMC DMA on every save.
+        // A short yield after the pause lets lwIP free any remaining TCP buffers.
+        pause_signalk_ws();
         {
-            const size_t IRAM_MIN_FOR_SD = 30 * 1024;
+            const size_t IRAM_MIN_FOR_SD = 20 * 1024;
             size_t iram_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
             if (iram_free < IRAM_MIN_FOR_SD) {
-                Serial.printf("[SD SAVE] iRAM low (%u B), yielding before SD writes...\n", iram_free);
+                Serial.printf("[SD SAVE] iRAM still low after WS pause (%u B), yielding...\n", iram_free);
                 Serial.flush();
-                // Yield for up to 2 s in 50 ms increments. The preceding gauges-page
-                // GET can consume ~12 KB of lwIP TCP buffers that the idle task needs
-                // time to release. 400 ms was insufficient for a 144 KB page send.
-                for (int w = 0; w < 40; w++) {
+                for (int w = 0; w < 20; w++) {  // up to 1s
                     vTaskDelay(pdMS_TO_TICKS(50));
                     esp_task_wdt_reset();
                     iram_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
@@ -1896,20 +1899,31 @@ void handle_save_gauges() {
         if (!SD_MMC.exists("/config")) SD_MMC.mkdir("/config");
         int sd_ok_count = 0;
         for (int s2 = 0; s2 < NUM_SCREENS; ++s2) {
-            char sdpath[64];
-            snprintf(sdpath, sizeof(sdpath), "/config/screen%d.bin", s2);
-            // Retry the open up to 3 times with a short yield between attempts —
-            // a single DMA stall can fail the first open even after the iRAM check.
+            char sdpath[68];
+            char tmppath[72];
+            snprintf(sdpath,  sizeof(sdpath),  "/config/screen%d.bin", s2);
+            snprintf(tmppath, sizeof(tmppath), "/config/screen%d.tmp", s2);
+            // Atomic write: write to .tmp first, rename to .bin only on full success.
+            // FILE_WRITE truncates the target file on open — writing directly to .bin
+            // would destroy valid config data if the write fails partway through.
             File sf;
             for (int retry = 0; retry < 3 && !sf; retry++) {
                 if (retry > 0) { vTaskDelay(pdMS_TO_TICKS(50)); esp_task_wdt_reset(); }
-                sf = SD_MMC.open(sdpath, FILE_WRITE);
+                sf = SD_MMC.open(tmppath, FILE_WRITE);
             }
             if (sf) {
                 size_t wrote = sf.write((const uint8_t *)&screen_configs[s2], sizeof(ScreenConfig));
                 sf.close();
-                Serial.printf("[SD SAVE] Immediate wrote '%s' -> %u bytes\n", sdpath, (unsigned)wrote);
-                if (wrote == sizeof(ScreenConfig)) sd_ok_count++;
+                if (wrote == sizeof(ScreenConfig)) {
+                    SD_MMC.remove(sdpath);           // remove old only after full write
+                    SD_MMC.rename(tmppath, sdpath);  // atomic replace
+                    Serial.printf("[SD SAVE] Wrote '%s' -> %u bytes\n", sdpath, (unsigned)wrote);
+                    sd_ok_count++;
+                } else {
+                    SD_MMC.remove(tmppath);          // discard partial write; original intact
+                    Serial.printf("[SD SAVE] Short write '%s' -> %u/%u B, original preserved\n",
+                                  sdpath, (unsigned)wrote, (unsigned)sizeof(ScreenConfig));
+                }
             } else {
                 Serial.printf("[SD SAVE] Immediate failed to open '%s' for writing\n", sdpath);
             }
@@ -1926,13 +1940,15 @@ void handle_save_gauges() {
             File spf;
             for (int retry = 0; retry < 3 && !spf; retry++) {
                 if (retry > 0) { vTaskDelay(pdMS_TO_TICKS(50)); esp_task_wdt_reset(); }
-                spf = SD_MMC.open("/config/signalk_paths.txt", FILE_WRITE);
+                spf = SD_MMC.open("/config/signalk_paths.tmp", FILE_WRITE);
             }
             if (spf) {
                 for (int i = 0; i < NUM_SCREENS * 2; ++i) {
                     spf.println(signalk_paths[i]);
                 }
                 spf.close();
+                SD_MMC.remove("/config/signalk_paths.txt");
+                SD_MMC.rename("/config/signalk_paths.tmp", "/config/signalk_paths.txt");
                 Serial.println("[SD SAVE] Wrote /config/signalk_paths.txt");
             } else {
                 Serial.println("[SD SAVE] Failed to write /config/signalk_paths.txt — falling back to NVS");
