@@ -78,6 +78,10 @@ void disable_signalk();
 void pause_signalk_ws();
 // Resume WS connection after config save; reconnects automatically
 void resume_signalk_ws();
+// Defer WS resume until after the next apply_all_screen_visuals() in the main loop.
+// Use this from HTTP handlers so LVGL SD image reads happen while iRAM is free.
+void schedule_signalk_ws_resume();
+extern volatile bool g_signalk_ws_resume_pending;
 // Rebuild and (re)send Signal K subscription list from current configuration
 void refresh_signalk_subscriptions();
 // Fetch metadata for all configured paths (gauges, number, dual displays)

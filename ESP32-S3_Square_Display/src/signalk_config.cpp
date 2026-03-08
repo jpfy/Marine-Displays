@@ -608,14 +608,28 @@ void pause_signalk_ws() {
                   heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
 }
 
+// Set when handle_save_gauges() wants WS resumed but LVGL apply is still pending.
+// The main loop calls resume_signalk_ws() after apply_all_screen_visuals() completes.
+volatile bool g_signalk_ws_resume_pending = false;
+
 // Resume the WebSocket connection after the config save completes.
 // The signalk_task will reconnect on its next loop; the WStype_CONNECTED
 // event handler sends updated subscriptions automatically on reconnect.
 void resume_signalk_ws() {
     if (!signalk_enabled) return;
+    g_signalk_ws_resume_pending = false;
     g_signalk_ws_paused = false;
     next_reconnect_at = 0; // reconnect without waiting full backoff
     Serial.println("[SK] WS resumed - reconnecting to Signal K");
+}
+
+// Schedule a WS resume to happen after the next apply_all_screen_visuals() completes.
+// Call this from HTTP handlers instead of resume_signalk_ws() directly, so that
+// LVGL image SD reads happen while iRAM is still free (WS still paused).
+void schedule_signalk_ws_resume() {
+    if (!signalk_enabled) return;
+    g_signalk_ws_resume_pending = true;
+    Serial.println("[SK] WS resume deferred until after screen rebuild");
 }
 
 // Rebuild the subscription list from current configuration and (re)send it

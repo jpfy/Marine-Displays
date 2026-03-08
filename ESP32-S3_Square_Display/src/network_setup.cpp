@@ -1964,11 +1964,11 @@ void handle_save_gauges() {
 
         // Refresh Signal K subscriptions immediately in case any SK paths changed
         // (safe to call even if WS not connected; function will no-op locally)
-        // Resume the WebSocket — signalk_task will reconnect and the WStype_CONNECTED
-        // handler automatically resubscribes to all configured paths.
-        // This also frees the save from needing refresh_signalk_subscriptions() since
-        // the reconnect event handles subscription refresh automatically.
-        resume_signalk_ws();
+        // Defer WS resume until after apply_all_screen_visuals() runs in the main loop.
+        // If we resume here, the WS reconnects before LVGL loads SD background images,
+        // dropping iRAM to ~15KB which causes sdmmc_read_blocks (257) failures and a crash.
+        // The main loop calls resume_signalk_ws() after the visual rebuild completes.
+        schedule_signalk_ws_resume();
         // Note: fetch_all_metadata() intentionally NOT called here — it makes blocking
         // HTTP requests (up to 1.5s each × many paths) which causes WDT on Core 1.
         // Metadata is fetched automatically on WS connect (wsEvent WStype_CONNECTED).

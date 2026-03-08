@@ -1571,6 +1571,12 @@ void loop() {
         apply_all_screen_visuals();
         Serial.println("[LOOP] apply_all_screen_visuals returned");
         Serial.flush();
+        // Resume WS now that LVGL has finished loading SD images.
+        // Doing this after apply avoids sdmmc_read_blocks(257) crashes caused
+        // by the WS receive buffer (~22KB) consuming iRAM before SD DMA reads.
+        if (g_signalk_ws_resume_pending) {
+            resume_signalk_ws();
+        }
     }
 
     Lvgl_Loop();
