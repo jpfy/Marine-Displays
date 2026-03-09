@@ -1553,6 +1553,11 @@ void handle_gauges_page() {
     Serial.flush();
     // All data sent — force RST so the PCB is freed immediately (no 60 s TIME_WAIT).
     rst_close_client();
+    // Resume WS immediately — don't wait 60s for the watchdog.
+    // handle_save_gauges() re-pauses on every save, so this is safe.
+    // Clear the watchdog timestamp so it doesn't double-fire.
+    g_config_page_last_seen = 0;
+    resume_signalk_ws();
 }
 
 void handle_save_gauges() {
