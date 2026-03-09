@@ -586,16 +586,21 @@ void enable_signalk(const char* ssid, const char* password, const char* server_i
     // We'll manage reconnection with backoff ourselves
     ws_client.setReconnectInterval(0);
 
-    // Create task to pump ws loop
-    xTaskCreatePinnedToCore(
-        signalk_task,
-        "SignalKWS",
-        8192,
-        NULL,
-        3,
-        &signalk_task_handle,
-        0
-    );
+    // Create task to pump ws loop.
+    // Allocate the 8KB stack in PSRAM so it doesn't consume internal RAM.
+    // StaticTask_t TCB must stay in internal RAM (FreeRTOS requirement).
+    static StaticTask_t sk_tcb;
+    uint8_t* sk_stack = (uint8_t*)heap_caps_malloc(8192, MALLOC_CAP_SPIRAM);
+    if (sk_stack == nullptr) {
+        // Fallback to internal RAM if PSRAM allocation fails
+        Serial.println("[SK] PSRAM stack alloc failed, using internal RAM");
+        xTaskCreatePinnedToCore(signalk_task, "SignalKWS", 8192, NULL, 3, &signalk_task_handle, 0);
+    } else {
+        signalk_task_handle = xTaskCreateStaticPinnedToCore(
+            signalk_task, "SignalKWS", 8192, NULL, 3,
+            sk_stack, &sk_tcb, 0
+        );
+    }
 
     Serial.println("Signal K WebSocket task created successfully");
     Serial.flush();

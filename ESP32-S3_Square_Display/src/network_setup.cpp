@@ -440,24 +440,26 @@ void save_preferences(bool skip_screen_blobs = false) {
     if (!any_nvs_ok) {
         Serial.println("[SD SAVE] NVS blob writes failed; saving screen configs to SD as fallback...");
         if (!SD_MMC.exists("/config")) SD_MMC.mkdir("/config");
-        for (int s = 0; s < NUM_SCREENS; ++s) {
-            char sdpath[68];
-            char tmppath[72];
-            snprintf(sdpath,  sizeof(sdpath),  "/config/screen%d.bin", s);
-            snprintf(tmppath, sizeof(tmppath), "/config/screen%d.tmp", s);
-            File f = SD_MMC.open(tmppath, FILE_WRITE);
-            if (!f) { Serial.printf("[SD SAVE] Failed to open '%s'\n", tmppath); continue; }
-            size_t written = f.write((const uint8_t *)&screen_configs[s], sizeof(ScreenConfig));
-            f.close();
-            if (written == sizeof(ScreenConfig)) {
-                SD_MMC.remove(sdpath);
-                SD_MMC.rename(tmppath, sdpath);
-                Serial.printf("[SD SAVE] Wrote '%s' -> %u bytes\n", sdpath, (unsigned)written);
+        // Batch write: all screens in one file — 3 FAT ops instead of 15
+        {
+            size_t total = sizeof(ScreenConfig) * NUM_SCREENS;
+            File f = SD_MMC.open("/config/screens.bin.tmp", FILE_WRITE);
+            if (!f) {
+                Serial.println("[SD SAVE] Failed to open /config/screens.bin.tmp");
             } else {
-                SD_MMC.remove(tmppath);
-                Serial.printf("[SD SAVE] Short write '%s', original preserved\n", sdpath);
+                size_t written = f.write((const uint8_t *)screen_configs, total);
+                f.close();
+                if (written == total) {
+                    SD_MMC.remove("/config/screens.bin");
+                    SD_MMC.rename("/config/screens.bin.tmp", "/config/screens.bin");
+                    Serial.printf("[SD SAVE] Wrote /config/screens.bin -> %u bytes\n", (unsigned)written);
+                } else {
+                    SD_MMC.remove("/config/screens.bin.tmp");
+                    Serial.printf("[SD SAVE] Short write /config/screens.bin -> %u/%u B, original preserved\n",
+                                  (unsigned)written, (unsigned)total);
+                }
             }
-        } // end for each screen
+        } // end batch write
         if (!SD_MMC.exists("/config")) SD_MMC.mkdir("/config");
         File spf = SD_MMC.open("/config/signalk_paths.txt", FILE_WRITE);
         if (spf) {
@@ -605,36 +607,72 @@ void load_preferences() {
     // Always prefer SD over NVS — SD is the authoritative save target.
     // NVS is only a fallback when SD is unavailable.
     bool restored_from_sd = false;
-    for (int s = 0; s < NUM_SCREENS; ++s) {
-        char sdpath[64];
-        snprintf(sdpath, sizeof(sdpath), "/config/screen%d.bin", s);
-        if (SD_MMC.exists(sdpath)) {
-            File f = SD_MMC.open(sdpath, FILE_READ);
-            if (f) {
-                size_t got = f.read((uint8_t *)&screen_configs[s], sizeof(ScreenConfig));
-                Serial.printf("[SD LOAD] Read '%s' -> %u bytes (expected %u)\n", sdpath, (unsigned)got, (unsigned)sizeof(ScreenConfig));
-                f.close();
-                bool valid = true;
-                for (int g = 0; g < 2 && valid; ++g) {
-                    for (int p = 0; p < 5; ++p) {
-                        if (screen_configs[s].cal[g][p].angle < -360 || screen_configs[s].cal[g][p].angle > 360) {
-                            valid = false; break;
+
+    // Try batch file first (written by current firmware)
+    if (SD_MMC.exists("/config/screens.bin")) {
+        File f = SD_MMC.open("/config/screens.bin", FILE_READ);
+        if (f) {
+            size_t total = sizeof(ScreenConfig) * NUM_SCREENS;
+            size_t got = f.read((uint8_t *)screen_configs, total);
+            f.close();
+            Serial.printf("[SD LOAD] Read /config/screens.bin -> %u bytes (expected %u)\n", (unsigned)got, (unsigned)total);
+            if (got == total) {
+                for (int s = 0; s < NUM_SCREENS; ++s) {
+                    bool valid = true;
+                    for (int g = 0; g < 2 && valid; ++g) {
+                        for (int p = 0; p < 5; ++p) {
+                            if (screen_configs[s].cal[g][p].angle < -360 || screen_configs[s].cal[g][p].angle > 360) {
+                                valid = false; break;
+                            }
                         }
                     }
+                    if (!valid) {
+                        Serial.printf("[CONFIG ERROR] SD batch config for screen %d invalid, restoring defaults\n", s);
+                        memset(&screen_configs[s], 0, sizeof(ScreenConfig));
+                    } else {
+                        restored_from_sd = true;
+                    }
                 }
-                if (!valid) {
-                    Serial.printf("[CONFIG ERROR] SD config for screen %d invalid, restoring defaults\n", s);
-                    memset(&screen_configs[s], 0, sizeof(ScreenConfig));
-                } else {
-                    restored_from_sd = true;
-                }
-            } else {
-                Serial.printf("[SD LOAD] Failed to open '%s', keeping NVS data for screen %d\n", sdpath, s);
             }
         } else {
-            Serial.printf("[SD LOAD] No SD config for screen %d, keeping NVS data\n", s);
+            Serial.println("[SD LOAD] Failed to open /config/screens.bin");
         }
     }
+
+    // Backward compat: fall back to per-screen files if batch file absent
+    if (!restored_from_sd) {
+        for (int s = 0; s < NUM_SCREENS; ++s) {
+            char sdpath[64];
+            snprintf(sdpath, sizeof(sdpath), "/config/screen%d.bin", s);
+            if (SD_MMC.exists(sdpath)) {
+                File f = SD_MMC.open(sdpath, FILE_READ);
+                if (f) {
+                    size_t got = f.read((uint8_t *)&screen_configs[s], sizeof(ScreenConfig));
+                    Serial.printf("[SD LOAD] Read '%s' -> %u bytes (expected %u)\n", sdpath, (unsigned)got, (unsigned)sizeof(ScreenConfig));
+                    f.close();
+                    bool valid = true;
+                    for (int g = 0; g < 2 && valid; ++g) {
+                        for (int p = 0; p < 5; ++p) {
+                            if (screen_configs[s].cal[g][p].angle < -360 || screen_configs[s].cal[g][p].angle > 360) {
+                                valid = false; break;
+                            }
+                        }
+                    }
+                    if (!valid) {
+                        Serial.printf("[CONFIG ERROR] SD config for screen %d invalid, restoring defaults\n", s);
+                        memset(&screen_configs[s], 0, sizeof(ScreenConfig));
+                    } else {
+                        restored_from_sd = true;
+                    }
+                } else {
+                    Serial.printf("[SD LOAD] Failed to open '%s', keeping NVS data for screen %d\n", sdpath, s);
+                }
+            } else {
+                Serial.printf("[SD LOAD] No SD config for screen %d, keeping NVS data\n", s);
+            }
+        }
+    }
+
     if (restored_from_sd) {
         Serial.println("[CONFIG RESTORE] Screen configs restored from SD after NVS was blank/default.");
     }
@@ -1892,34 +1930,29 @@ void handle_save_gauges() {
         }
         if (!SD_MMC.exists("/config")) SD_MMC.mkdir("/config");
         int sd_ok_count = 0;
-        for (int s2 = 0; s2 < NUM_SCREENS; ++s2) {
-            char sdpath[68];
-            char tmppath[72];
-            snprintf(sdpath,  sizeof(sdpath),  "/config/screen%d.bin", s2);
-            snprintf(tmppath, sizeof(tmppath), "/config/screen%d.tmp", s2);
-            // Atomic write: write to .tmp first, rename to .bin only on full success.
-            // FILE_WRITE truncates the target file on open — writing directly to .bin
-            // would destroy valid config data if the write fails partway through.
+        // Batch write: all screens in one file — 3 FAT ops instead of 15
+        {
+            size_t total = sizeof(ScreenConfig) * NUM_SCREENS;
             File sf;
             for (int retry = 0; retry < 3 && !sf; retry++) {
                 if (retry > 0) { vTaskDelay(pdMS_TO_TICKS(50)); esp_task_wdt_reset(); }
-                sf = SD_MMC.open(tmppath, FILE_WRITE);
+                sf = SD_MMC.open("/config/screens.bin.tmp", FILE_WRITE);
             }
             if (sf) {
-                size_t wrote = sf.write((const uint8_t *)&screen_configs[s2], sizeof(ScreenConfig));
+                size_t wrote = sf.write((const uint8_t *)screen_configs, total);
                 sf.close();
-                if (wrote == sizeof(ScreenConfig)) {
-                    SD_MMC.remove(sdpath);           // remove old only after full write
-                    SD_MMC.rename(tmppath, sdpath);  // atomic replace
-                    Serial.printf("[SD SAVE] Wrote '%s' -> %u bytes\n", sdpath, (unsigned)wrote);
-                    sd_ok_count++;
+                if (wrote == total) {
+                    SD_MMC.remove("/config/screens.bin");  // remove old only after full write
+                    SD_MMC.rename("/config/screens.bin.tmp", "/config/screens.bin");  // atomic replace
+                    Serial.printf("[SD SAVE] Wrote /config/screens.bin -> %u bytes\n", (unsigned)wrote);
+                    sd_ok_count = NUM_SCREENS;
                 } else {
-                    SD_MMC.remove(tmppath);          // discard partial write; original intact
-                    Serial.printf("[SD SAVE] Short write '%s' -> %u/%u B, original preserved\n",
-                                  sdpath, (unsigned)wrote, (unsigned)sizeof(ScreenConfig));
+                    SD_MMC.remove("/config/screens.bin.tmp");  // discard partial; original intact
+                    Serial.printf("[SD SAVE] Short write /config/screens.bin -> %u/%u B, original preserved\n",
+                                  (unsigned)wrote, (unsigned)total);
                 }
             } else {
-                Serial.printf("[SD SAVE] Immediate failed to open '%s' for writing\n", sdpath);
+                Serial.println("[SD SAVE] Failed to open /config/screens.bin.tmp for writing");
             }
         }
         bool sd_all_ok = (sd_ok_count == NUM_SCREENS);
