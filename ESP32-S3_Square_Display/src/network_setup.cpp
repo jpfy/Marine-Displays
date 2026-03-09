@@ -755,13 +755,14 @@ void handle_gauges_page() {
     }
     html.clear();
     // flushHtml: send whatever is currently in html to the client, then clear it.
-    // delay(1) yields to the lwIP/WiFi task so it can process ACKs and free
-    // TCP PBUFs before we queue the next section.
+    // lv_timer_handler() is called after each send so the display keeps
+    // updating while loop() is blocked inside sendContent() during the stream.
     auto flushHtml = [&]() {
         if (html.length() > 0) {
             esp_task_wdt_reset();
             config_server.sendContent(html);
             html.clear();
+            lv_timer_handler(); // keep display alive during long HTTP stream
         }
     };
     html += "<!DOCTYPE html><html><head>";
