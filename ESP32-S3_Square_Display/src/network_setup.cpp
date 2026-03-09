@@ -678,23 +678,37 @@ void handle_gauges_page() {
     // This ensures enough contiguous iRAM remains for SD DMA writes on save.
     // The connection is restored automatically in handle_save_gauges().
     pause_signalk_ws();
-    Serial.println("[GAUGES] handler entered");
-    // Build the entire page into a single String pre-allocated in PSRAM.
-    // BOARD_HAS_PSRAM + ESP-IDF default threshold (16KB): any malloc > 16KB goes
-    // to PSRAM automatically. The static keyword means the 200KB buffer is allocated
-    // once at first call and reused forever — zero reallocs, zero heap fragmentation
-    // regardless of how many times the page is loaded or saved.
+    Serial.printf("[GAUGES] handler entered, iRAM=%u\n",
+        heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    // Send HTTP headers immediately using chunked transfer encoding so we can
+    // stream HTML to the browser as it is built — no large buffer required.
+    // CONTENT_LENGTH_UNKNOWN triggers chunked transfer; browser receives data
+    // in real-time while we build each section, keeping TCP send buffers small.
+    esp_task_wdt_reset();
+    config_server.sendHeader("Connection", "close");
+    config_server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    config_server.send(200, "text/html; charset=utf-8", "");
+    Serial.println("[GAUGES] headers sent, streaming HTML");
+    // Small working buffer: each section is flushed as it is built.
+    // No 200KB PSRAM reservation — peak internal RAM from TCP send buffers stays
+    // low because lwIP can ACK and free PBUFs between flushes.
     static String html;
     static bool html_reserved = false;
     if (!html_reserved) {
-        html.reserve(200000); // one-time PSRAM allocation ~200KB
+        html.reserve(8192); // small working buffer, flushed per section
         html_reserved = true;
     }
     html.clear();
-    // flushHtml is now a no-op: the whole page is built into a static PSRAM-backed
-    // String and sent in one shot at the end. No chunking, no fragmentation.
-    auto flushHtml = [&]() { /* no-op: whole page built first, sent in chunks below */ };
-    Serial.println("[GAUGES] headers sent, building HTML");
+    // flushHtml: send whatever is currently in html to the client, then clear it.
+    // delay(1) yields to the lwIP/WiFi task so it can process ACKs and free
+    // TCP PBUFs before we queue the next section.
+    auto flushHtml = [&]() {
+        if (html.length() > 0) {
+            esp_task_wdt_reset();
+            config_server.sendContent(html);
+            html.clear();
+        }
+    };
     html += "<!DOCTYPE html><html><head>";
     html += "<meta charset='UTF-8'>";
     html += STYLE;
@@ -1393,6 +1407,7 @@ void handle_gauges_page() {
     html += "    graphColorDiv.style.display = (sel.value === 'Custom Color') ? 'block' : 'none';\n";
     html += "  }\n";
     html += "}\n";
+    flushHtml(); // flush toggleBgImageColor before the DOMContentLoaded handler
     html += "document.addEventListener('DOMContentLoaded',function(){\n";
     html += "  var testMode = " + String(test_mode ? "true" : "false") + ";\n";
     // Pass display types and show_bottom flags to JavaScript
@@ -1448,6 +1463,7 @@ void handle_gauges_page() {
     html += "  var initial = 0; if(location.hash && location.hash.indexOf('#tab')===0){ initial = parseInt(location.hash.replace('#tab',''))||0; }\n";
     html += "  showScreenTab(initial);\n";
     html += "});</script>\n";
+    flushHtml(); // flush first script block before ajaxSave script
     // AJAX save — sends the form as POST via fetch(), returns tiny JSON.
     // This eliminates the 302→GET cycle that re-sends 144 KB on every save,
     // preventing lwIP pbuf fragmentation from exhausting internal RAM.
@@ -1473,35 +1489,11 @@ void handle_gauges_page() {
     html += "</script>";
     html += "<p style='text-align:center;'><a href='/'>Back</a></p>";
     html += "</div></body></html>";
-    Serial.printf("[GAUGES] page built, %u bytes, sending chunked\n", (unsigned)html.length());
-    Serial.flush();
-    // Send from static PSRAM-backed String in 8KB chunks.
-    // - Static string = no fragmentation (zero reallocs, all in PSRAM).
-    // - Chunked send = no TCP buffer overflow, no 3s WDT block.
-    esp_task_wdt_reset(); // reset before header write — setContentLength/send can block
-    config_server.sendHeader("Connection", "close");  // browser closes after response → no TIME_WAIT PCB on ESP32
-    config_server.setContentLength(html.length());
-    config_server.send(200, "text/html; charset=utf-8", "");
-    Serial.printf("[GAUGES] headers sent, starting body send iRAM=%u\n",
-        heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-    Serial.flush();
-    const size_t CHUNK = 8192;
-    size_t offset = 0;
-    int chunk_num = 0;
-    while (offset < html.length()) {
-        esp_task_wdt_reset(); // reset BEFORE each chunk — not after, so chunk 0 stall can't expire WDT
-        size_t len = min(CHUNK, html.length() - offset);
-        config_server.sendContent(html.c_str() + offset, len);
-        offset += len;
-        chunk_num++;
-        if (chunk_num % 4 == 0) { // log every 32KB
-            Serial.printf("[GAUGES] sent %u/%u (chunk %d)\n", (unsigned)offset, (unsigned)html.length(), chunk_num);
-            Serial.flush();
-        }
-    }
+    flushHtml(); // flush final section
     esp_task_wdt_reset();
-    config_server.sendContent("");
-    Serial.printf("[GAUGES] send complete, %d chunks\n", chunk_num);
+    config_server.sendContent(""); // chunked transfer terminator (zero-length chunk)
+    Serial.printf("[GAUGES] stream complete, iRAM=%u\n",
+        heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     Serial.flush();
     // All data sent — force RST so the PCB is freed immediately (no 60 s TIME_WAIT).
     rst_close_client();

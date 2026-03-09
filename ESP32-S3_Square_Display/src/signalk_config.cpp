@@ -52,6 +52,10 @@ static bool signalk_enabled = false;
 // until the flag is cleared on save — freeing the ~22KB WS receive buffer.
 static volatile bool g_signalk_ws_paused = false;
 
+// Set by resume_signalk_ws() to tell signalk_task to reconnect once iRAM > 20KB.
+// signalk_task clears both this and g_signalk_ws_paused when the threshold is met.
+static volatile bool g_signalk_ws_resume_when_ready = false;
+
 // Connection health and reconnection/backoff state
 static unsigned long last_message_time = 0;
 static unsigned long last_reconnect_attempt = 0;
@@ -466,9 +470,26 @@ static void signalk_task(void *parameter) {
         if (g_signalk_ws_paused) {
             if (ws_client.isConnected()) {
                 ws_client.disconnect();
-                next_reconnect_at = 0;          // reconnect immediately on resume
                 current_backoff_ms = RECONNECT_BASE_MS;
                 Serial.println("[SK] Config UI active - WS disconnected to free iRAM");
+            }
+            // If resume was requested, wait until iRAM recovers before reconnecting.
+            // lwIP TIME_WAIT PCBs from the HTTP page send hold ~15KB of internal heap
+            // for several seconds; connecting while iRAM < 20KB crashes the device.
+            if (g_signalk_ws_resume_when_ready) {
+                size_t free_iram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+                if (free_iram >= 20 * 1024) {
+                    g_signalk_ws_resume_when_ready = false;
+                    g_signalk_ws_paused = false;
+                    next_reconnect_at = millis() + 1000; // brief 1s settle then connect
+                    Serial.printf("[SK] iRAM recovered to %u B - WS unpaused\n", free_iram);
+                } else {
+                    static unsigned long last_iram_log = 0;
+                    if (millis() - last_iram_log > 2000) {
+                        Serial.printf("[SK] Waiting for iRAM recovery (%u B < 20480)\n", free_iram);
+                        last_iram_log = millis();
+                    }
+                }
             }
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
@@ -612,20 +633,16 @@ void pause_signalk_ws() {
 // The main loop calls resume_signalk_ws() after apply_all_screen_visuals() completes.
 volatile bool g_signalk_ws_resume_pending = false;
 
+
 // Resume the WebSocket connection after the config save completes.
-// The signalk_task will reconnect on its next loop; the WStype_CONNECTED
-// event handler sends updated subscriptions automatically on reconnect.
+// Keeps g_signalk_ws_paused=true and sets g_signalk_ws_resume_when_ready so the
+// signalk_task will reconnect once iRAM > 20KB (lwIP TIME_WAIT PCBs have cleared).
 void resume_signalk_ws() {
     if (!signalk_enabled) return;
     g_signalk_ws_resume_pending = false;
-    g_signalk_ws_paused = false;
-    // Delay reconnect by 8s to allow lwIP to free TIME_WAIT PCBs and PBUF_RAM
-    // allocations from the HTTP page send. Reconnecting immediately (next_reconnect_at=0)
-    // causes the WS receive buffer malloc (~22KB) to fail against still-occupied
-    // internal heap, crashing the device.
-    next_reconnect_at = millis() + 8000;
-    current_backoff_ms = RECONNECT_BASE_MS;
-    Serial.println("[SK] WS resumed - reconnecting to Signal K in 8s (lwIP TIME_WAIT clearing)");
+    // Keep paused — signalk_task will clear the pause once iRAM recovers
+    g_signalk_ws_resume_when_ready = true;
+    Serial.println("[SK] WS resume requested - waiting for iRAM > 20KB before reconnecting");
 }
 
 // Schedule a WS resume to happen after the next apply_all_screen_visuals() completes.
