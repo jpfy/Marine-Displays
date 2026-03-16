@@ -5,6 +5,10 @@ uint8_t gt911_addr = GT911_ADDR_PRIMARY;
 
 struct GT911_Touch touch_data = {0};
 
+// Rate-limit noisy I2C error messages (every 5 seconds max)
+static unsigned long last_i2c_err_log = 0;
+#define I2C_ERR_LOG_INTERVAL_MS 5000
+
 
 bool I2C_Read_Touch(uint8_t Driver_addr, uint16_t Reg_addr, uint8_t *Reg_data, uint32_t Length)
 {
@@ -12,7 +16,11 @@ bool I2C_Read_Touch(uint8_t Driver_addr, uint16_t Reg_addr, uint8_t *Reg_data, u
   Wire.write((uint8_t)(Reg_addr >> 8)); 
   Wire.write((uint8_t)Reg_addr);         
   if ( Wire.endTransmission(true)){
-    printf("The I2C transmission fails. - I2C Read\r\n");
+    unsigned long now = millis();
+    if (now - last_i2c_err_log >= I2C_ERR_LOG_INTERVAL_MS) {
+      last_i2c_err_log = now;
+      printf("[TOUCH] I2C Read failed (addr=0x%02X, reg=0x%04X)\r\n", Driver_addr, Reg_addr);
+    }
     return false;
   }
   Wire.requestFrom(Driver_addr, Length);
@@ -31,7 +39,11 @@ bool I2C_Write_Touch(uint8_t Driver_addr, uint16_t Reg_addr, const uint8_t *Reg_
   }
   if ( Wire.endTransmission(true))
   {
-    printf("The I2C transmission fails. - I2C Write\r\n");
+    unsigned long now = millis();
+    if (now - last_i2c_err_log >= I2C_ERR_LOG_INTERVAL_MS) {
+      last_i2c_err_log = now;
+      printf("[TOUCH] I2C Write failed (addr=0x%02X, reg=0x%04X)\r\n", Driver_addr, Reg_addr);
+    }
     return false;
   }
   return true;
@@ -66,6 +78,10 @@ uint8_t Touch_Init(void) {
 /* Reset controller */
 uint8_t GT911_Touch_Reset(void)
 {
+  printf("[TOUCH] GT911_Touch_Reset: board=%s, expander=0x%02X\n",
+         is_board_v4() ? "v4" : "v3", g_tca9554_address);
+
+  // Drive INT pin LOW before releasing reset → GT911 latches I2C address 0x5D
   pinMode(GT911_INT_PIN, OUTPUT);                   
   digitalWrite(GT911_INT_PIN, LOW);                  
 
@@ -77,6 +93,7 @@ uint8_t GT911_Touch_Reset(void)
   digitalWrite(GT911_INT_PIN, HIGH);                
   pinMode(GT911_INT_PIN, INPUT);                     
 
+  printf("[TOUCH] GT911_Touch_Reset: done\n");
   return true;
 }
 void GT911_Read_cfg(void) {

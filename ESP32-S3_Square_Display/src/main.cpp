@@ -6,6 +6,7 @@ bool test_mode = false;
 #include "I2C_Driver.h"
 #include "TCA9554PWR.h"
 #include "Display_ST7701.h"
+#include "Touch_GT911.h"
 #include "LVGL_Driver.h"
 #include "SD_Card.h"
 #include "ui.h"
@@ -1152,6 +1153,12 @@ void setup() {
     Set_EXIOS(Read_EXIOS(TCA9554_OUTPUT_REG) & (uint8_t)~(1 << (EXIO_PIN6 - 1)));
     Mode_EXIOS(0x00);
     Set_EXIO(EXIO_PIN6, Low);
+
+    // Initialize GT911 touch controller: reset with INT=LOW to force address 0x5D,
+    // auto-detect address (v3=0x5D, v4 may be 0x14), read config, attach interrupt.
+    Touch_Init();
+    Serial.println("Touch controller initialized");
+    Serial.flush();
 
     // Stage 3: Full SD re-init now that the display has finished taking the SPI pins
     Serial.println("SD: now performing SD_MMC.begin('/sdcard', true) after display init");
