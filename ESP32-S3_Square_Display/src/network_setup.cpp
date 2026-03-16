@@ -863,13 +863,16 @@ void handle_gauges_page() {
     html += "    var ccOpt=bgSel.querySelector(\"option[value='Custom Color']\");\n";
     html += "    var isGauge=(sel.value==='0'||sel.value==='4');\n";
     html += "    if(ccOpt){ccOpt.hidden=isGauge;ccOpt.disabled=isGauge;if(isGauge&&bgSel.value==='Custom Color')bgSel.value=bgSel.options[0].value;}\n";
+    // Hide entire Background dropdown for AIS (has its own colour picker)
+    html += "    var isAIS=(sel.value==='8');\n";
+    html += "    bgSel.parentElement.parentElement.style.display=isAIS?'none':'block';\n";
     html += "  }\n";
     html += "  toggleBgImageColor(screen);\n";
     html += "}\n";
 
     html += "function toggleBgImageColor(screen){\n";
     html += "  var sel=document.getElementById('bg_image_'+screen);\n";
-    html += "  ['number_bg_color_div_','dual_bg_color_div_','graph_bg_color_div_','pos_bg_color_div_','ais_bg_color_div_'].forEach(function(p){\n";
+    html += "  ['number_bg_color_div_','dual_bg_color_div_','graph_bg_color_div_','pos_bg_color_div_'].forEach(function(p){\n";
     html += "    var d=document.getElementById(p+screen);\n";
     html += "    if(sel&&d) d.style.display=(sel.value==='Custom Color'?'block':'none');\n";
     html += "  });\n";
@@ -1357,8 +1360,7 @@ void handle_gauges_screen() {
         html += ">" + String(aisRangeNames[ar]) + "</option>";
     }
     html += "</select></label></div>";
-    bool isCustomColorAis = (String(screen_configs[s].background_path) == "Custom Color");
-    html += "<div id='ais_bg_color_div_" + String(s) + "' style='margin-bottom:8px;display:" + String(isCustomColorAis ? "block" : "none") + ";'>";
+    html += "<div style='margin-bottom:8px;'>";
     html += "<label>Background Colour: <input name='ais_bg_color_" + String(s) + "' type='color' value='" + String(screen_configs[s].number_bg_color[0] ? screen_configs[s].number_bg_color : "#001020") + "'></label></div>";
     html += "</div>"; // close aisconfig
     flushHtml();

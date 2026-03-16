@@ -19,14 +19,15 @@ struct PsramAllocatorAis {
 #define DISPLAY_CX       240
 #define DISPLAY_CY       240
 #define PLOT_RADIUS      210
-#define RING_COUNT         3
 #define OWN_SHIP_SIZE     14
 #define TARGET_SIZE        8
 #define NM_TO_METRES   1852.0f
 #define DEG_TO_RAD     (M_PI / 180.0f)
 #define RAD_TO_DEG     (180.0f / M_PI)
 
-static const float range_nm[] = { 0.5f, 1.0f, 2.0f, 5.0f, 10.0f, 20.0f };
+static const float range_nm[]  = { 0.5f, 1.0f, 2.0f, 5.0f, 10.0f, 20.0f };
+static const int   ring_count[] = {  5,    5,    4,    5,    5,     4    };
+//  ring intervals:                0.1  0.2   0.5   1.0   2.0    5.0  NM
 
 // ─── AIS target data ─────────────────────────────────────────────────────────
 typedef struct {
@@ -162,6 +163,7 @@ void ais_display_create(int n) {
     lv_obj_set_style_border_width(a_bg[n], 0, 0);
     lv_obj_set_style_pad_all(a_bg[n], 0, 0);
     lv_obj_clear_flag(a_bg[n], LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(a_bg[n], LV_OBJ_FLAG_FLOATING);  // Ignore parent layout
 
     // Canvas for radar plot (allocated in PSRAM)
     size_t buf_size = LV_CANVAS_BUF_SIZE_TRUE_COLOR(480, 480);
@@ -202,6 +204,24 @@ void ais_display_update(int n, float own_lat, float own_lon,
     if (n < 0 || n >= NUM_SCREENS) return;
     if (!a_canvas[n] || !a_cbuf[n]) return;
 
+    // Rate-limit canvas redraws — AIS data only updates every 5 s.
+    // Also skip if nothing changed to avoid flicker.
+    static unsigned long last_redraw[NUM_SCREENS] = {};
+    static float prev_cog[NUM_SCREENS] = {NAN,NAN,NAN,NAN,NAN};
+    static float prev_sog[NUM_SCREENS] = {NAN,NAN,NAN,NAN,NAN};
+    static int   prev_tgt_count[NUM_SCREENS] = {};
+    unsigned long now = millis();
+    bool data_changed = (g_ais_target_count != prev_tgt_count[n])
+                     || (isnan(own_cog) != isnan(prev_cog[n]))
+                     || (!isnan(own_cog) && fabsf(own_cog - prev_cog[n]) > 0.5f)
+                     || (isnan(own_sog) != isnan(prev_sog[n]))
+                     || (!isnan(own_sog) && fabsf(own_sog - prev_sog[n]) > 0.05f);
+    if (!data_changed && (now - last_redraw[n] < 2000)) return;
+    last_redraw[n] = now;
+    prev_cog[n] = own_cog;
+    prev_sog[n] = own_sog;
+    prev_tgt_count[n] = g_ais_target_count;
+
     // Range from config (repurpose graph_time_range field)
     uint8_t range_idx = screen_configs[n].graph_time_range;
     if (range_idx > 5) range_idx = 3;  // default 5 NM
@@ -212,10 +232,11 @@ void ais_display_update(int n, float own_lat, float own_lon,
                                      ? screen_configs[n].number_bg_color : "#001020");
     lv_canvas_fill_bg(a_canvas[n], bg_col, LV_OPA_COVER);
 
-    // ── Range rings ──────────────────────────────────────────────────────────
+    // ── Range rings (per-range count for clean round intervals) ──────────────
+    int n_rings = ring_count[range_idx];
     lv_color_t ring_col = lv_color_make(40, 80, 40);
-    for (int r = 1; r <= RING_COUNT; r++) {
-        int ring_r = (PLOT_RADIUS * r) / RING_COUNT;
+    for (int r = 1; r <= n_rings; r++) {
+        int ring_r = (PLOT_RADIUS * r) / n_rings;
         canvas_circle(a_canvas[n], DISPLAY_CX, DISPLAY_CY, ring_r, ring_col);
     }
 
@@ -230,18 +251,21 @@ void ais_display_update(int n, float own_lat, float own_lon,
             lv_canvas_set_px_color(a_canvas[n], i, DISPLAY_CY, xhair_col);
     }
 
-    // ── North indicator (red dot rotated by -COG for head-up mode) ───────────
+    // ── North indicator ("N" drawn on canvas, rotated by -COG for head-up) ──
     float north_angle = isnan(own_cog) ? 0.0f : -own_cog;
     float na_rad = north_angle * DEG_TO_RAD;
     int nx = DISPLAY_CX + (int)((PLOT_RADIUS + 12) * sinf(na_rad));
     int ny = DISPLAY_CY - (int)((PLOT_RADIUS + 12) * cosf(na_rad));
-    lv_color_t n_col = lv_color_make(255, 50, 50);
-    for (int dy = -2; dy <= 2; dy++)
-        for (int dx = -2; dx <= 2; dx++) {
-            int px = nx + dx, py = ny + dy;
-            if (px >= 0 && px < 480 && py >= 0 && py < 480)
-                lv_canvas_set_px_color(a_canvas[n], px, py, n_col);
-        }
+    {
+        lv_draw_label_dsc_t n_dsc;
+        lv_draw_label_dsc_init(&n_dsc);
+        n_dsc.color = lv_color_make(255, 50, 50);
+        n_dsc.font = &inter_16;
+        lv_point_t n_sz;
+        lv_txt_get_size(&n_sz, "N", n_dsc.font, 0, 0, 30, LV_TEXT_FLAG_NONE);
+        lv_canvas_draw_text(a_canvas[n], nx - n_sz.x / 2, ny - n_sz.y / 2,
+                            n_sz.x + 2, &n_dsc, "N");
+    }
 
     // ── Own ship (centre, pointing up in head-up mode) ───────────────────────
     lv_color_t own_col = lv_color_make(255, 255, 255);
@@ -370,6 +394,25 @@ void ais_fetch_targets(const char* server_ip, uint16_t server_port) {
 
     if (!g_ais_mutex) g_ais_mutex = xSemaphoreCreateMutex();
 
+    // Fetch own vessel identifier from Signal K (e.g. "vessels.urn:mrn:imo:mmsi:123456789")
+    // Cache it — it never changes during a session.
+    static String self_key;
+    if (self_key.isEmpty()) {
+        HTTPClient hSelf;
+        char selfUrl[128];
+        snprintf(selfUrl, sizeof(selfUrl), "http://%s:%u/signalk/v1/api/self", server_ip, server_port);
+        hSelf.setTimeout(2000);
+        hSelf.begin(selfUrl);
+        if (hSelf.GET() == 200) {
+            self_key = hSelf.getString();
+            self_key.replace("\"", "");      // strip JSON quotes
+            // Strip leading "vessels." prefix so it matches the key in /vessels
+            if (self_key.startsWith("vessels.")) self_key = self_key.substring(8);
+            Serial.printf("[AIS] Own vessel key: %s\n", self_key.c_str());
+        }
+        hSelf.end();
+    }
+
     HTTPClient http;
     char url[128];
     snprintf(url, sizeof(url), "http://%s:%u/signalk/v1/api/vessels", server_ip, server_port);
@@ -398,6 +441,8 @@ void ais_fetch_targets(const char* server_ip, uint16_t server_port) {
     for (JsonPair kv : vessels) {
         const char* key = kv.key().c_str();
         if (strcmp(key, "self") == 0) continue;
+        // Skip own vessel (matched via /signalk/v1/api/self)
+        if (self_key.length() > 0 && self_key.equals(key)) continue;
 
         JsonObject vessel = kv.value().as<JsonObject>();
         if (!vessel.containsKey("navigation")) continue;
