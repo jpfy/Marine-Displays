@@ -48,11 +48,11 @@ static void make_vfs_path(const char* in, char* out, size_t outlen) {
 }
 
 void SD_D3_Dis(){
-  Set_EXIO(EXIO_PIN4,Low);
+  Set_EXIO(pin_sdcs(),Low);    // SD CS: V3=pin4(IO3), V4=pin5(EXIO4)
   vTaskDelay(pdMS_TO_TICKS(10));
 }
 void SD_D3_EN(){
-  Set_EXIO(EXIO_PIN4,High);
+  Set_EXIO(pin_sdcs(),High);   // SD CS: V3=pin4(IO3), V4=pin5(EXIO4)
   vTaskDelay(pdMS_TO_TICKS(10));
 }
 esp_err_t SD_Init() {

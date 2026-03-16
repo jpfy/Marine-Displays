@@ -227,21 +227,25 @@ void ST7701_Init()
     Serial.printf("[DISPLAY] esp_io_expander_new_i2c_tca9554 failed: %s\n", esp_err_to_name(rxe));
     io_expander = NULL; // continue, but 3-wire SPI requires an expander for CS
   } else {
-    // The io_expander library now reads (not resets) the TCA9554 registers,
+    // The io_expander library now reads (not resets) the TCA9554/CH32V003 registers,
     // so the hardware state set by TCA9554PWR_Init() in setup() is preserved.
-    // Still, explicitly ensure PIN6 (buzzer) stays LOW before switching all
-    // pins to OUTPUT.  set_level is safe here because the cached direction
-    // from the hardware read already has PIN6 as output (CONFIG bit5=0 from
-    // either TCA9554PWR_Init or our ST7701_Reset v4 fix).
-    esp_io_expander_set_level(io_expander, (1 << (EXIO_PIN6 - 1)), 0); // PIN6 LOW = buzzer OFF (active-HIGH circuit)
-    // Now switch ALL 8 pins to OUTPUT so the cached direction is 0x00.
-    // Every subsequent set_dir() call by the 3-wire SPI driver reads 0x00
-    // and writes 0x00 back, keeping PIN6 as output.
-    esp_err_t dir_err = esp_io_expander_set_dir(io_expander, 0xFF, IO_EXPANDER_OUTPUT);
-    if (dir_err != ESP_OK) {
-      Serial.printf("[DISPLAY] io_expander set_dir all-OUTPUT failed: %s\n", esp_err_to_name(dir_err));
+    if (is_board_v4()) {
+      // V4 (CH32V003): Direction already set correctly by TCA9554PWR_Init (0x3A).
+      // BEE_EN is configured as input → buzzer safe. Don't override with all-output.
+      // Just ensure the output pins that matter are HIGH.
+      uint32_t out_mask = (1 << 1) | (1 << 3) | (1 << 4) | (1 << 5); // EXIO1,3,4,5
+      esp_io_expander_set_dir(io_expander, out_mask, IO_EXPANDER_OUTPUT);
+      esp_io_expander_set_level(io_expander, out_mask, 1); // all output pins HIGH
+      Serial.println("[DISPLAY] io_expander V4: preserved CH32V003 direction, outputs HIGH");
     } else {
-      Serial.println("[DISPLAY] io_expander direction cache set to all-OUTPUT (PIN6/buzzer safe)");
+      // V3 (TCA9554): Set PIN6 LOW (buzzer safety) then all pins to output.
+      esp_io_expander_set_level(io_expander, (1 << (EXIO_PIN6 - 1)), 0);
+      esp_err_t dir_err = esp_io_expander_set_dir(io_expander, 0xFF, IO_EXPANDER_OUTPUT);
+      if (dir_err != ESP_OK) {
+        Serial.printf("[DISPLAY] io_expander set_dir all-OUTPUT failed: %s\n", esp_err_to_name(dir_err));
+      } else {
+        Serial.println("[DISPLAY] io_expander direction cache set to all-OUTPUT (PIN6/buzzer safe)");
+      }
     }
   }
 
@@ -434,38 +438,14 @@ void ST7701_Init()
 void ST7701_Reset()
 {
   if (is_board_v4()) {
-    // V4 boards use a different reset sequence via the IO expander at 0x24.
-    // NOTE: register 0x02 is the Polarity Inversion register, NOT the Output
-    // register (that is 0x01).  The original v4 reference code writes polarity
-    // toggles here; we keep them as-is because the display works, but they do
-    // NOT toggle physical output pins.
-    Serial.printf("[DISPLAY] ST7701_Reset: v4 board reset via I2C expander at 0x%02X\n", g_tca9554_address);
-    Wire.beginTransmission(TCA9554_ADDR_V4);
-    Wire.write(0x02);  // polarity inversion register
-    Wire.write(0x00);  // no inversion
-    Wire.endTransmission();
-    delay(20);
-
-    Wire.beginTransmission(TCA9554_ADDR_V4);
-    Wire.write(0x02);  // polarity inversion register
-    Wire.write(0xFF);  // all inverted (part of v4 reset sequence)
-    Wire.endTransmission();
-    delay(120);
-
-    // Set pin directions.  Original value 0x3A had bit 5 set (PIN6 = input),
-    // which floats the buzzer line and turns the buzzer ON.  Use 0x1A instead
-    // to keep PIN6 as output (buzzer stays silent).
-    Wire.beginTransmission(TCA9554_ADDR_V4);
-    Wire.write(0x03);  // config register
-    Wire.write(0x1A);  // v4 pin directions — bit5=0 keeps PIN6 (buzzer) as output
-    Wire.endTransmission();
-
-    // Clear the polarity inversion set above so subsequent input reads are correct
-    Wire.beginTransmission(TCA9554_ADDR_V4);
-    Wire.write(0x02);  // polarity inversion register
-    Wire.write(0x00);  // no inversion
-    Wire.endTransmission();
-
+    // V4 boards: CH32V003 IO expander at 0x24.
+    // TCA9554PWR_Init has already set direction (0x3A) and output latch (0xFF).
+    // Now pulse LCD_RST (EXIO3/bit3) via the fixed driver functions.
+    Serial.printf("[DISPLAY] ST7701_Reset: v4 board, pulsing LCD_RST via pin %d\n", pin_lcd_rst());
+    Set_EXIO(pin_lcd_rst(), Low);
+    vTaskDelay(pdMS_TO_TICKS(20));
+    Set_EXIO(pin_lcd_rst(), High);
+    vTaskDelay(pdMS_TO_TICKS(120));
     Serial.println("[DISPLAY] ST7701_Reset: v4 done");
   } else {
     // V3 boards: toggle EXIO_PIN3 (expander reset)

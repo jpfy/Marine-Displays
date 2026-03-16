@@ -54,20 +54,32 @@ static lv_obj_t *ui_BrightnessLevelLabel = NULL;
 extern "C" void trigger_buzzer_alert() {
     if (buzzer_mode == 0) return;
     printf("trigger_buzzer_alert() called, buzzer_mode=%d\n", buzzer_mode);
-    // Write OUTPUT register with PIN6 HIGH *before* switching to output mode,
-    // then switch CONFIG to outputs. This prevents a glitch LOW if OUTPUT was 0x00.
-    Set_EXIOS(Read_EXIOS(TCA9554_OUTPUT_REG) & (uint8_t)~(1 << (EXIO_PIN6 - 1)));
-    Mode_EXIOS(0x00);
-    printf("  -> beep 1\n");
-    Set_EXIO(EXIO_PIN6, High);     // buzzer ON  (active-HIGH: High=on, Low=off)
-    ets_delay_us(200000);          // 200ms
-    Set_EXIO(EXIO_PIN6, Low);      // buzzer OFF
-    ets_delay_us(100000);          // 100ms gap
-    printf("  -> beep 2\n");
-    Set_EXIO(EXIO_PIN6, High);     // buzzer ON
-    ets_delay_us(200000);          // 200ms
-    Set_EXIO(EXIO_PIN6, Low);      // buzzer OFF
-    Mode_EXIOS(0x00);              // re-assert all outputs
+
+    if (is_board_v4()) {
+      // V4 (CH32V003): BEE_EN = EXIO6/bit6 = PIN_BEE_EN (pin 7).
+      // Temporarily make BEE_EN an output to drive the buzzer.
+      Mode_EXIO(PIN_BEE_EN, 0);   // output mode
+      Set_EXIO(PIN_BEE_EN, High); // buzzer ON
+      ets_delay_us(200000);
+      Set_EXIO(PIN_BEE_EN, Low);  // buzzer OFF
+      ets_delay_us(100000);
+      Set_EXIO(PIN_BEE_EN, High); // buzzer ON
+      ets_delay_us(200000);
+      Set_EXIO(PIN_BEE_EN, Low);  // buzzer OFF
+      Mode_EXIO(PIN_BEE_EN, 1);   // back to input (safe)
+    } else {
+      // V3: buzzer on EXIO_PIN6 (bit5)
+      Set_EXIOS(Read_EXIOS(exio_output_reg()) & (uint8_t)~(1 << (EXIO_PIN6 - 1)));
+      Mode_EXIOS(0x00);
+      Set_EXIO(EXIO_PIN6, High);
+      ets_delay_us(200000);
+      Set_EXIO(EXIO_PIN6, Low);
+      ets_delay_us(100000);
+      Set_EXIO(EXIO_PIN6, High);
+      ets_delay_us(200000);
+      Set_EXIO(EXIO_PIN6, Low);
+      Mode_EXIOS(0x00);
+    }
 }
 
 // Event handler for buzzer dropdown

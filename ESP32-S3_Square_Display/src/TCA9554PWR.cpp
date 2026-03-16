@@ -78,8 +78,18 @@ bool is_board_v4()
   return g_board_v4;
 }
 
+uint8_t exio_output_reg()
+{
+  return g_board_v4 ? CH32V003_OUTPUT_REG : TCA9554_OUTPUT_REG;
+}
+
+// Functional pin aliases — V4 pins shifted +1 vs V3 (CH32V003 added EXIO0/charger at bit0)
+uint8_t pin_tp_rst()  { return g_board_v4 ? 2 : 1; }  // V3:IO0/bit0, V4:EXIO1/bit1
+uint8_t pin_lcd_rst() { return g_board_v4 ? 4 : 3; }  // V3:IO2/bit2, V4:EXIO3/bit3
+uint8_t pin_sdcs()    { return g_board_v4 ? 5 : 4; }  // V3:IO3/bit3, V4:EXIO4/bit4
+
 /*****************************************************  Operation register REG   ****************************************************/   
-uint8_t I2C_Read_EXIO(uint8_t REG)                             // Read the value of the TCA9554PWR register REG
+uint8_t I2C_Read_EXIO(uint8_t REG)
 {
   Wire.beginTransmission(TCA9554_ADDRESS);                
   Wire.write(REG);                                        
@@ -91,7 +101,7 @@ uint8_t I2C_Read_EXIO(uint8_t REG)                             // Read the value
   uint8_t bitsStatus = Wire.read();                        
   return bitsStatus;                                     
 }
-uint8_t I2C_Write_EXIO(uint8_t REG,uint8_t Data)              // Write Data to the REG register of the TCA9554PWR
+uint8_t I2C_Write_EXIO(uint8_t REG,uint8_t Data)
 {
   Wire.beginTransmission(TCA9554_ADDRESS);                
   Wire.write(REG);                                        
@@ -104,50 +114,55 @@ uint8_t I2C_Write_EXIO(uint8_t REG,uint8_t Data)              // Write Data to t
   return 0;                                             
 }
 /********************************************************** Set EXIO mode **********************************************************/       
-void Mode_EXIO(uint8_t Pin,uint8_t State)                 // Set the mode of the TCA9554PWR Pin. State: 0= Output mode 1= Input mode
+void Mode_EXIO(uint8_t Pin,uint8_t State)                 // State: 0=Output, 1=Input (TCA convention; auto-inverts for V4)
 {
   uint8_t bitsStatus = I2C_Read_EXIO(TCA9554_CONFIG_REG);
   uint8_t Data;
-  if (State == 1)
-    Data = (0x01 << (Pin-1)) | bitsStatus;   // set bit = input
+  // V4 (CH32V003): direction polarity is inverted (1=output, 0=input)
+  bool want_input = (State == 1);
+  if (g_board_v4) want_input = !want_input; // invert for CH32V003
+  if (want_input)
+    Data = (0x01 << (Pin-1)) | bitsStatus;   // set bit
   else
-    Data = (~(0x01 << (Pin-1))) & bitsStatus; // clear bit = output
+    Data = (~(0x01 << (Pin-1))) & bitsStatus; // clear bit
   uint8_t result = I2C_Write_EXIO(TCA9554_CONFIG_REG,Data); 
   if (result != 0) { 
     printf("I/O Configuration Failure !!!\r\n");
   }
 }
-void Mode_EXIOS(uint8_t PinState)                         // Set the mode of the 7 pins from the TCA9554PWR with PinState   
+void Mode_EXIOS(uint8_t PinState)                         // PinState in TCA convention (0=out,1=in); auto-inverts for V4   
 {
-  uint8_t result = I2C_Write_EXIO(TCA9554_CONFIG_REG,PinState);  
+  // V4 (CH32V003): direction polarity is inverted (1=output, 0=input)
+  uint8_t hw_val = g_board_v4 ? (uint8_t)~PinState : PinState;
+  uint8_t result = I2C_Write_EXIO(TCA9554_CONFIG_REG, hw_val);  
   if (result != 0) {   
     printf("I/O Configuration Failure !!!\r\n");
   }
 }
 /********************************************************** Read EXIO status **********************************************************/       
-uint8_t Read_EXIO(uint8_t Pin)                            // Read the level of the TCA9554PWR Pin
+uint8_t Read_EXIO(uint8_t Pin)
 {
   uint8_t inputBits = I2C_Read_EXIO(TCA9554_INPUT_REG);          
   uint8_t bitStatus = (inputBits >> (Pin-1)) & 0x01; 
   return bitStatus;                                  
 }
-uint8_t Read_EXIOS(uint8_t REG = TCA9554_INPUT_REG)       // Read the level of all pins of TCA9554PWR, the default read input level state, want to get the current IO output state, pass the parameter TCA9554_OUTPUT_REG, such as Read_EXIOS(TCA9554_OUTPUT_REG);
+uint8_t Read_EXIOS(uint8_t REG = TCA9554_INPUT_REG)
 {
   uint8_t inputBits = I2C_Read_EXIO(REG);                     
   return inputBits;     
 }
 
 /********************************************************** Set the EXIO output status **********************************************************/  
-void Set_EXIO(uint8_t Pin,uint8_t State)                  // Sets the level state of the Pin without affecting the other pins
+void Set_EXIO(uint8_t Pin,uint8_t State)                  // Sets the level of Pin without affecting others
 {
   uint8_t Data;
   if(State < 2 && Pin < 9 && Pin > 0){  
-    uint8_t bitsStatus = Read_EXIOS(TCA9554_OUTPUT_REG);
+    uint8_t bitsStatus = Read_EXIOS(exio_output_reg());
     if(State == 1)                                     
       Data = (0x01 << (Pin-1)) | bitsStatus; 
     else if(State == 0)                  
       Data = (~(0x01 << (Pin-1))) & bitsStatus;      
-    uint8_t result = I2C_Write_EXIO(TCA9554_OUTPUT_REG,Data);  
+    uint8_t result = I2C_Write_EXIO(exio_output_reg(),Data);  
     if (result != 0) {                         
       printf("Failed to set GPIO!!!\r\n");
     }
@@ -155,21 +170,27 @@ void Set_EXIO(uint8_t Pin,uint8_t State)                  // Sets the level stat
   else                                           
     printf("Parameter error, please enter the correct parameter!\r\n");
 }
-void Set_EXIOS(uint8_t PinState)                          // Set 7 pins to the PinState state such as :PinState=0x23, 0010 0011 state (the highest bit is not used)
+void Set_EXIOS(uint8_t PinState)                          // Set all output pins (writes correct register for V3/V4)
 {
-  uint8_t result = I2C_Write_EXIO(TCA9554_OUTPUT_REG,PinState); 
+  uint8_t result = I2C_Write_EXIO(exio_output_reg(),PinState); 
   if (result != 0) {                  
     printf("Failed to set GPIO!!!\r\n");
   }
 }
 /********************************************************** Flip EXIO state **********************************************************/  
-void Set_Toggle(uint8_t Pin)                              // Flip the level of the TCA9554PWR Pin
+void Set_Toggle(uint8_t Pin)
 {
     uint8_t bitsStatus = Read_EXIO(Pin);                 
     Set_EXIO(Pin,(bool)!bitsStatus); 
 }
-/********************************************************* TCA9554PWR Initializes the device ***********************************************************/  
-void TCA9554PWR_Init(uint8_t PinState)                  // Set the seven pins to PinState state, for example :PinState=0x23, 0010 0011 State  (Output mode or input mode) 0= Output mode 1= Input mode. The default value is output mode
+/********************************************************* Init ***********************************************************/  
+void TCA9554PWR_Init(uint8_t PinState)                  // PinState in TCA convention (0=out,1=in). V3 default=0x00 (all out)
 {                  
   Mode_EXIOS(PinState);      
+}
+/********************************************************* V4 Backlight PWM ***********************************************************/  
+void backlight_set_pwm(uint8_t duty)
+{
+  if (!g_board_v4) return; // V3 uses different backlight control
+  I2C_Write_EXIO(CH32V003_PWM_REG, duty);
 }

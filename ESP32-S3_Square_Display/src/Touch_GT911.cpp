@@ -115,9 +115,9 @@ uint8_t GT911_Touch_Reset(void)
   pinMode(GT911_INT_PIN, OUTPUT);                   
   digitalWrite(GT911_INT_PIN, LOW);                  
 
-  Set_EXIO(EXIO_PIN1,Low);
+  Set_EXIO(pin_tp_rst(),Low);   // TP_RST: V3=pin1(IO0), V4=pin2(EXIO1)
   vTaskDelay(pdMS_TO_TICKS(10));
-  Set_EXIO(EXIO_PIN1,High);
+  Set_EXIO(pin_tp_rst(),High);
   vTaskDelay(pdMS_TO_TICKS(200));
 
   digitalWrite(GT911_INT_PIN, HIGH);                

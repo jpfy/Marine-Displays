@@ -1097,20 +1097,31 @@ void setup() {
     // Immediate hardware UART0 marker - visible on CH343 even before USB CDC comes up
     ets_printf("\r\n\r\n*** SETUP() START ***\r\n");
 
-    // CRITICAL: silence the buzzer ASAP.
-    // TCA9554 powers up with CONFIG=0xFF (all inputs). PIN6 (BEE_EN) floating HIGH-Z
-    // causes R18 (4.7kΩ) to win over the internal pullup → Q1 OFF → Q7 ON → buzzer ON
-    // immediately at hardware power-on. Init I2C and set all pins to OUTPUT with PIN6 HIGH
-    // before Serial.begin / delays so the buzzer is silenced within ~20ms of boot.
+    // CRITICAL: silence the buzzer ASAP and configure IO expander.
+    // V3 (TCA9554): Set all outputs, PIN6 LOW.
+    // V4 (CH32V003): Set OUTPUT=0xFF (all high), DIRECTION=0x3A (BEE_EN as input = safe).
+    //   CH32V003 powers up with all outputs HIGH and all pins as inputs.
+    //   BEE_EN as input = high-Z → SS8050 base has no drive → buzzer OFF.
     I2C_Init();
     delay(10); // let Wire bus settle before I2C transactions
     // Detect board version (v3=0x20, v4=0x24) before any expander operations
     detect_expander_address();
-    // Write OUTPUT register first (PIN6 HIGH = buzzer OFF) BEFORE switching CONFIG to output,
-    // so there is no glitch-LOW when the pin transitions from high-Z to driven.
-    Set_EXIOS(0xDF);             // output latch: PIN6 LOW (bit5=0, 0xDF=11011111) = buzzer OFF
-    TCA9554PWR_Init(0x00);       // CONFIG = all outputs → buzzer line now actively driven LOW
-    ets_printf("*** Buzzer silenced at boot ***\r\n");
+
+    if (is_board_v4()) {
+      // V4 (CH32V003): Set output latch to safe values BEFORE configuring directions.
+      // All outputs HIGH: TP_RST released, LCD_RST released, SDCS deselected, SYS_EN on.
+      // BEE_EN output latch doesn't matter since direction mask keeps it as input.
+      Set_EXIOS(0xFF);
+      // Direction: TCA convention 0xC5 → driver inverts to 0x3A for CH32V003
+      // EXIO1=out(TP_RST), EXIO3=out(LCD_RST), EXIO4=out(SDCS), EXIO5=out(SYS_EN)
+      // EXIO0=in(charger), EXIO2=in(TP_INT), EXIO6=in(BEE_EN safe), EXIO7=in(RTC_INT)
+      TCA9554PWR_Init(V4_DIR_TCA_CONVENTION);
+    } else {
+      // V3 (TCA9554): Write output latch before switching to output mode
+      Set_EXIOS(0xDF);             // bit5=0 (PIN6 LOW on V3)
+      TCA9554PWR_Init(0x00);       // CONFIG = all outputs
+    }
+    ets_printf("*** IO expander configured (board %s) ***\r\n", is_board_v4() ? "v4" : "v3");
 
     // Serial for debugging - with timeout
     Serial.setTxTimeoutMs(0);  // Non-blocking serial
@@ -1121,8 +1132,10 @@ void setup() {
     Serial.println("\n\n=== ESP32 Round Display Starting ===");
     Serial.flush();
     
-    // I2C and IO expander already initialized above; re-assert buzzer OFF after delay
-    Set_EXIO(EXIO_PIN6, Low);    // re-assert buzzer OFF (active-HIGH: Low=off, High=on)
+    // I2C and IO expander already initialized above; re-assert safe state after delay
+    if (!is_board_v4()) {
+      Set_EXIO(EXIO_PIN6, Low);    // V3: re-assert PIN6 LOW
+    }
     ets_printf("*** I2C+expander done ***\r\n");
     Serial.println("I2C and IO expander initialized");
     Serial.flush();
@@ -1162,11 +1175,16 @@ void setup() {
     ets_printf("*** LCD_Init start ***\r\n");
     LCD_Init();
     ets_printf("*** LCD_Init done ***\r\n");
-    // The io_expander library now preserves hardware register state, but
-    // re-assert PIN6 LOW (buzzer OFF) and all-outputs as a safety net.
-    Set_EXIOS(Read_EXIOS(TCA9554_OUTPUT_REG) & (uint8_t)~(1 << (EXIO_PIN6 - 1)));
-    Mode_EXIOS(0x00);
-    Set_EXIO(EXIO_PIN6, Low);
+    // Re-assert safe IO expander state after LCD_Init (which may have modified registers)
+    if (is_board_v4()) {
+      // V4: re-assert CH32V003 direction mask (BEE_EN as input = safe)
+      TCA9554PWR_Init(V4_DIR_TCA_CONVENTION);
+    } else {
+      // V3: re-assert all outputs with PIN6 LOW
+      Set_EXIOS(Read_EXIOS(exio_output_reg()) & (uint8_t)~(1 << (EXIO_PIN6 - 1)));
+      Mode_EXIOS(0x00);
+      Set_EXIO(EXIO_PIN6, Low);
+    }
 
     // Heap integrity check — narrow down PSRAM corruption source
     if (!heap_caps_check_integrity_all(true)) {
@@ -1684,15 +1702,14 @@ void loop() {
 
     // Maintain TCA9554 PIN6 LOW (buzzer OFF, active-HIGH circuit) every 50ms.
     // esp_io_expander_new_i2c_tca9554 resets CONFIG=0xFF (all inputs) during LCD_Init;
-    // when PIN6 is high-Z the pull-up circuit turns the buzzer ON.
-    // This loop unconditionally re-asserts all-outputs with PIN6 LOW.
-    {
+    // Buzzer safety maintenance (V3 only — V3 TCA9554 CONFIG can reset to all-inputs).
+    // On V4, BEE_EN is kept as input via direction mask 0x3A → inherently safe.
+    if (!is_board_v4()) {
         static unsigned long last_buz_maintain = 0;
         unsigned long now_m = millis();
         if (now_m - last_buz_maintain >= 50) {
             last_buz_maintain = now_m;
-            // Clear PIN6 bit (bit5) in OUTPUT register, then assert all-outputs
-            Set_EXIOS(Read_EXIOS(TCA9554_OUTPUT_REG) & (uint8_t)~(1 << (EXIO_PIN6 - 1)));
+            Set_EXIOS(Read_EXIOS(exio_output_reg()) & (uint8_t)~(1 << (EXIO_PIN6 - 1)));
             Mode_EXIOS(0x00);
         }
     }

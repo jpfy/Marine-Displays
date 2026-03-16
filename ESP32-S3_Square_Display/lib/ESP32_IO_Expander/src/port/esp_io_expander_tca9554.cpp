@@ -7,10 +7,16 @@
 #include "esp_io_expander_tca9554.h"
 #include "esp_expander_utils.h"
 
+// Board version detection from TCA9554PWR driver
+extern bool is_board_v4();
+
 #define I2C_TIMEOUT_MS (10)
 #define IO_COUNT (8)
 #define INPUT_REG_ADDR (0x00)
-#define OUTPUT_REG_ADDR (0x01)
+// OUTPUT and DIRECTION register addresses differ between TCA9554 (V3) and CH32V003 (V4)
+// TCA9554: OUTPUT=0x01, DIR=0x03, dir polarity: 0=output,1=input
+// CH32V003: OUTPUT=0x02, DIR=0x03, dir polarity: 1=output,0=input (INVERTED)
+static uint8_t output_reg_addr() { return is_board_v4() ? 0x02 : 0x01; }
 #define DIRECTION_REG_ADDR (0x03)
 #define DIR_REG_DEFAULT_VAL (0xff)
 #define OUT_REG_DEFAULT_VAL (0xff)
@@ -49,7 +55,9 @@ esp_err_t esp_io_expander_new_i2c_tca9554(i2c_port_t i2c_num, uint32_t i2c_addre
     ESP_RETURN_ON_FALSE(tca, ESP_ERR_NO_MEM, TAG, "Malloc failed");
 
     tca->base.config.io_count = IO_COUNT;
-    tca->base.config.flags.dir_out_bit_zero = 1;
+    // TCA9554: dir_out_bit_zero=1 (bit 0 in dir reg = output)
+    // CH32V003: dir_out_bit_zero=0 (bit 1 in dir reg = output)
+    tca->base.config.flags.dir_out_bit_zero = is_board_v4() ? 0 : 1;
     tca->i2c_num = i2c_num;
     tca->i2c_address = i2c_address;
     tca->base.read_input_reg = read_input_reg;
@@ -99,7 +107,7 @@ static esp_err_t write_output_reg(esp_io_expander_handle_t handle, uint32_t valu
     value &= 0xff;
 
     Wire.beginTransmission((uint8_t)tca->i2c_address);
-    Wire.write(OUTPUT_REG_ADDR);
+    Wire.write(output_reg_addr());
     Wire.write((uint8_t)value);
     if (Wire.endTransmission() != 0) {
         ESP_LOGE(TAG, "Write output reg failed");
@@ -160,9 +168,9 @@ static esp_err_t reset(esp_io_expander_t *handle)
     }
     tca->regs.direction = (uint8_t)Wire.read();
 
-    // Read output register
+    // Read output register (0x01 on TCA9554, 0x02 on CH32V003)
     Wire.beginTransmission((uint8_t)tca->i2c_address);
-    Wire.write(OUTPUT_REG_ADDR);
+    Wire.write(output_reg_addr());
     if (Wire.endTransmission() != 0 || Wire.requestFrom((uint8_t)tca->i2c_address, (uint8_t)1) < 1) {
         ESP_LOGW(TAG, "Reset: failed to read output reg, using defaults");
         tca->regs.output = OUT_REG_DEFAULT_VAL;
