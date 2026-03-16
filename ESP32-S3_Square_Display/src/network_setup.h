@@ -26,6 +26,7 @@ void setup_network();
 // Set this flag from any context to request apply_all_screen_visuals() be called
 // safely from loop() on the next iteration, avoiding LVGL access from HTTP handlers.
 extern volatile bool g_pending_visual_apply;
+extern volatile bool g_error_screen_active;
 // Per-screen lazy re-apply flags: set when a save happens while the screen was
 // inactive; cleared when that screen becomes active and visuals are re-applied.
 extern volatile bool g_screens_need_apply[5];

@@ -1343,6 +1343,22 @@ void loop() {
     // Switch to Signal K mode
     static bool use_demo_mode = false;
     
+    // Skip all widget access when error screen replaced UI (widgets destroyed)
+    if (g_error_screen_active) {
+        // Still process deferred visual apply so web UI config saves can rebuild screens
+        if (g_pending_visual_apply) {
+            g_pending_visual_apply = false;
+            // Rebuild all screens from the new config
+            if (apply_all_screen_visuals()) {
+                g_error_screen_active = false;
+                Serial.println("[LOOP] Error screen cleared — config applied successfully");
+            }
+        }
+        // Only run web server + LVGL timer, no gauge/needle/icon updates
+        Lvgl_Loop();
+        return;
+    }
+
     // Check if in setup mode - use preview angles instead of Signal K data
     if (gauge_is_setup_mode()) {
         int16_t top_angle = gauge_get_preview_top_angle();

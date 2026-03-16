@@ -49,6 +49,7 @@ extern "C" void show_fallback_error_screen_if_needed() {
     }
     if (all_default) {
         Serial.println("[ERROR] All screen configs are default/blank. Showing fallback error screen.");
+        g_error_screen_active = true;
         #ifdef LVGL_H
         lv_obj_t *scr = lv_scr_act();
         lv_obj_clean(scr);
@@ -240,6 +241,7 @@ static volatile bool skip_next_load_preferences = false;
 // doing so modifies LVGL objects from handleClient() context, which races
 // with the display DMA flush and corrupts heap after repeated page-builds.
 volatile bool g_pending_visual_apply = false;
+volatile bool g_error_screen_active = false;
 volatile bool g_screens_need_apply[5] = {false, false, false, false, false};
 // millis() timestamp of the last config page visit; reset to 0 after WS auto-resume.
 unsigned long g_config_page_last_seen = 0;

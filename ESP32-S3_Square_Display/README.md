@@ -13,11 +13,14 @@ It features:
 - Touch and non Touch options
 - Number display with different display options, Single large display, Dual screen, Quad Screen
 - Guage with added number display (Wind instrument style)
-- Graph display with the option for an additional data source
+- Graph display with the option for an additional data source & data retained while device is powered
+- Navigation Display with heading & Dual data feilds
+- Position and Time display
+- AIS Radar display
 
 ESP32-S3 Square Display
 
-The hardware used:
+The hardware used (Supports V3 & V4 boards):
 ESP32-S3 4inch Display Development Board, 480×480, 32-Bit LX7 Dual-Core Processor, Up To 240MHz Frequency, Supports WiFi & Bluetooth, With Onboard Antenna, ESP32 With Display https://www.waveshare.com/esp32-s3-touch-lcd-4.htm
 
 This folder contains files and documentation for building the ESP32-S3 based square display.
