@@ -1,4 +1,5 @@
 #include "Touch_GT911.h"
+#include <Preferences.h>
 
 // Runtime GT911 I2C address — set by Touch_Init() auto-detect
 uint8_t gt911_addr = GT911_ADDR_PRIMARY;
@@ -53,19 +54,48 @@ uint8_t Touch_Init(void) {
 
   GT911_Touch_Reset();
 
+  // Check NVS for a cached GT911 address from a previous successful probe.
+  // After a soft reset (crash-reboot) the GT911 may not respond to probe
+  // because it didn't get a power-cycle. Use the cached address in that case.
+  Preferences prefs;
+  uint8_t cached_addr = 0;
+  if (prefs.begin("settings", true)) {
+    cached_addr = prefs.getUChar("touch_addr", 0);
+    prefs.end();
+  }
+
   // Auto-detect GT911 I2C address (v3=0x5D, v4=0x14)
+  bool probed = false;
   Wire.beginTransmission(GT911_ADDR_PRIMARY);
   if (Wire.endTransmission() == 0) {
     gt911_addr = GT911_ADDR_PRIMARY;
+    probed = true;
     printf("[TOUCH] GT911 found at 0x%02X (v3 board)\n", gt911_addr);
   } else {
     Wire.beginTransmission(GT911_ADDR_SECONDARY);
     if (Wire.endTransmission() == 0) {
       gt911_addr = GT911_ADDR_SECONDARY;
+      probed = true;
       printf("[TOUCH] GT911 found at 0x%02X (v4 board)\n", gt911_addr);
+    } else if (cached_addr == GT911_ADDR_PRIMARY || cached_addr == GT911_ADDR_SECONDARY) {
+      // GT911 didn't respond (probably soft reset without power cycle).
+      // Use the cached address from a previous successful probe.
+      gt911_addr = cached_addr;
+      printf("[TOUCH] GT911 not responding, using cached addr 0x%02X\n", gt911_addr);
     } else {
       gt911_addr = GT911_ADDR_PRIMARY;
-      printf("[TOUCH] GT911 not found at either address, defaulting to 0x%02X\n", gt911_addr);
+      printf("[TOUCH] GT911 not found, no cache, defaulting to 0x%02X\n", gt911_addr);
+    }
+  }
+
+  // Cache the address so crash-reboots use the right one
+  if (probed) {
+    if (prefs.begin("settings", false)) {
+      if (prefs.getUChar("touch_addr", 0) != gt911_addr) {
+        prefs.putUChar("touch_addr", gt911_addr);
+        printf("[TOUCH] Cached touch_addr=0x%02X to NVS\n", gt911_addr);
+      }
+      prefs.end();
     }
   }
 
@@ -112,7 +142,9 @@ uint8_t Touch_Read_Data(void) {
   uint8_t clear = 0;
   uint8_t Over = 0xAB;
   size_t i = 0,num=0;
-  I2C_Read_Touch(GT911_ADDR, ESP_LCD_TOUCH_GT911_READ_XY_REG, buf, 1);
+  if (!I2C_Read_Touch(GT911_ADDR, ESP_LCD_TOUCH_GT911_READ_XY_REG, buf, 1)) {
+    return true; // I2C failed — don't process garbage data
+  }
   if ((buf[0] & 0x80) == 0x00) {                                              
     I2C_Write_Touch(GT911_ADDR, ESP_LCD_TOUCH_GT911_READ_XY_REG, &clear, 1);  // No touch data
   } else {
@@ -123,7 +155,10 @@ uint8_t Touch_Read_Data(void) {
       return true;
     }
     /* Read all points */
-    I2C_Read_Touch(GT911_ADDR, ESP_LCD_TOUCH_GT911_READ_XY_REG+1, &buf[1], touch_cnt * 8);
+    if (!I2C_Read_Touch(GT911_ADDR, ESP_LCD_TOUCH_GT911_READ_XY_REG+1, &buf[1], touch_cnt * 8)) {
+      I2C_Write_Touch(GT911_ADDR, ESP_LCD_TOUCH_GT911_READ_XY_REG, &clear, 1);
+      return true; // I2C failed — discard partial read
+    }
     /* Clear all */
     I2C_Write_Touch(GT911_ADDR, ESP_LCD_TOUCH_GT911_READ_XY_REG, &clear, 1);
     // printf(" points=%d \r\n",touch_cnt);
