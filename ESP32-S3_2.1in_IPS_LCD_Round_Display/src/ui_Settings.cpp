@@ -14,6 +14,8 @@ lv_obj_t *ui_SettingsPanel = NULL;
 lv_obj_t *ui_BrightnessSlider = NULL;
 lv_obj_t *ui_BrightnessLabel = NULL;
 lv_obj_t *ui_IPLabel = NULL;
+lv_obj_t *ui_RSSILabel = NULL;
+lv_obj_t *ui_RSSIBar = NULL;
 lv_obj_t *ui_BackButton = NULL;
 lv_obj_t *ui_BuzzerSwitch = NULL;
 lv_obj_t *ui_BuzzerLabel = NULL;
@@ -88,15 +90,39 @@ static void buzzer_switch_event_cb(lv_event_t *e)
     }
 }
 
-// Update IP address when screen is shown
+// Update IP address and RSSI when screen is shown
 extern "C" void update_ip_address(void)
 {
     if (ui_IPLabel != NULL) {
         if (WiFi.status() == WL_CONNECTED) {
             String ip = WiFi.localIP().toString();
             lv_label_set_text(ui_IPLabel, ip.c_str());
+            lv_obj_set_style_text_color(ui_IPLabel, lv_color_hex(0x00FF00), 0);
         } else {
             lv_label_set_text(ui_IPLabel, "Not Connected");
+            lv_obj_set_style_text_color(ui_IPLabel, lv_color_hex(0x808080), 0);
+        }
+    }
+    // Update WiFi signal strength bar and label
+    if (ui_RSSIBar != NULL && ui_RSSILabel != NULL) {
+        if (WiFi.status() == WL_CONNECTED) {
+            int rssi = WiFi.RSSI();
+            int pct = constrain(2 * (rssi + 100), 0, 100);
+            lv_bar_set_value(ui_RSSIBar, pct, LV_ANIM_ON);
+            lv_color_t bar_color;
+            if (pct > 60) bar_color = lv_color_hex(0x22AA22);
+            else if (pct > 30) bar_color = lv_color_hex(0xDDAA22);
+            else bar_color = lv_color_hex(0xDD2222);
+            lv_obj_set_style_bg_color(ui_RSSIBar, bar_color, LV_PART_INDICATOR);
+            char buf[24];
+            snprintf(buf, sizeof(buf), "%d dBm (%d%%)", rssi, pct);
+            lv_label_set_text(ui_RSSILabel, buf);
+            lv_obj_set_style_text_color(ui_RSSILabel, bar_color, 0);
+        } else {
+            lv_bar_set_value(ui_RSSIBar, 0, LV_ANIM_OFF);
+            lv_obj_set_style_bg_color(ui_RSSIBar, lv_color_hex(0x808080), LV_PART_INDICATOR);
+            lv_label_set_text(ui_RSSILabel, "No Signal");
+            lv_obj_set_style_text_color(ui_RSSILabel, lv_color_hex(0x808080), 0);
         }
     }
 }
@@ -242,7 +268,7 @@ extern "C" void ui_Settings_screen_init(void)
     lv_label_set_text_fmt(ui_BrightnessLabel, "Brightness: %d%%", LCD_Backlight);
     lv_obj_set_style_text_color(ui_BrightnessLabel, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_x(ui_BrightnessLabel, 0);
-    lv_obj_set_y(ui_BrightnessLabel, -80);
+    lv_obj_set_y(ui_BrightnessLabel, -70);
     lv_obj_set_align(ui_BrightnessLabel, LV_ALIGN_CENTER);
     
     // Brightness slider
@@ -252,7 +278,7 @@ extern "C" void ui_Settings_screen_init(void)
     lv_obj_set_width(ui_BrightnessSlider, 300);
     lv_obj_set_height(ui_BrightnessSlider, 20);
     lv_obj_set_x(ui_BrightnessSlider, 0);
-    lv_obj_set_y(ui_BrightnessSlider, -30);
+    lv_obj_set_y(ui_BrightnessSlider, -20);
     lv_obj_set_align(ui_BrightnessSlider, LV_ALIGN_CENTER);
     lv_obj_set_style_bg_color(ui_BrightnessSlider, lv_color_hex(0x404040), LV_PART_MAIN);
     lv_obj_set_style_bg_color(ui_BrightnessSlider, lv_color_hex(0x00A8FF), LV_PART_INDICATOR);
@@ -264,7 +290,7 @@ extern "C" void ui_Settings_screen_init(void)
     lv_label_set_text(ui_BuzzerLabel, "Buzzer:");
     lv_obj_set_style_text_color(ui_BuzzerLabel, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_x(ui_BuzzerLabel, -70);
-    lv_obj_set_y(ui_BuzzerLabel, 20);
+    lv_obj_set_y(ui_BuzzerLabel, 30);
     lv_obj_set_align(ui_BuzzerLabel, LV_ALIGN_CENTER);
 
     // Buzzer mode dropdown (Off / Global / Per-screen) inline with label
@@ -273,7 +299,7 @@ extern "C" void ui_Settings_screen_init(void)
     lv_obj_set_width(ui_BuzzerSwitch, 140);
     lv_obj_set_height(ui_BuzzerSwitch, 32);
     lv_obj_set_x(ui_BuzzerSwitch, 40);
-    lv_obj_set_y(ui_BuzzerSwitch, 20);
+    lv_obj_set_y(ui_BuzzerSwitch, 30);
     lv_obj_set_align(ui_BuzzerSwitch, LV_ALIGN_CENTER);
     lv_obj_add_event_cb(ui_BuzzerSwitch, buzzer_switch_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
@@ -293,7 +319,7 @@ extern "C" void ui_Settings_screen_init(void)
     lv_label_set_text(ui_BuzzerCooldownLabel, "Cooldown Timer:");
     lv_obj_set_style_text_color(ui_BuzzerCooldownLabel, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_x(ui_BuzzerCooldownLabel, -100);
-    lv_obj_set_y(ui_BuzzerCooldownLabel, 60);
+    lv_obj_set_y(ui_BuzzerCooldownLabel, 70);
     lv_obj_set_align(ui_BuzzerCooldownLabel, LV_ALIGN_CENTER);
 
     ui_BuzzerCooldownDrop = lv_dropdown_create(ui_SettingsPanel);
@@ -301,7 +327,7 @@ extern "C" void ui_Settings_screen_init(void)
     lv_obj_set_width(ui_BuzzerCooldownDrop, 140);
     lv_obj_set_height(ui_BuzzerCooldownDrop, 32);
     lv_obj_set_x(ui_BuzzerCooldownDrop, 40);
-    lv_obj_set_y(ui_BuzzerCooldownDrop, 60);
+    lv_obj_set_y(ui_BuzzerCooldownDrop, 70);
     lv_obj_set_align(ui_BuzzerCooldownDrop, LV_ALIGN_CENTER);
 
     // Map persisted seconds to dropdown index
@@ -339,7 +365,7 @@ extern "C" void ui_Settings_screen_init(void)
         lv_label_set_text(ip_title, "IP Address:     ");
     lv_obj_set_style_text_color(ip_title, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_x(ip_title, -40);
-    lv_obj_set_y(ip_title, -120);
+    lv_obj_set_y(ip_title, -130);
     lv_obj_set_align(ip_title, LV_ALIGN_CENTER);
     
     // IP Address value
@@ -347,15 +373,46 @@ extern "C" void ui_Settings_screen_init(void)
     lv_label_set_text(ui_IPLabel, "Checking...");
     lv_obj_set_style_text_color(ui_IPLabel, lv_color_hex(0x00FF00), 0);
     lv_obj_set_x(ui_IPLabel, 40);
-    lv_obj_set_y(ui_IPLabel, -120);
+    lv_obj_set_y(ui_IPLabel, -130);
     lv_obj_set_align(ui_IPLabel, LV_ALIGN_CENTER);
+    
+    // WiFi Signal Strength row
+    lv_obj_t *rssi_title = lv_label_create(ui_SettingsPanel);
+    lv_label_set_text(rssi_title, "WiFi Signal:");
+    lv_obj_set_style_text_color(rssi_title, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_x(rssi_title, -90);
+    lv_obj_set_y(rssi_title, -100);
+    lv_obj_set_align(rssi_title, LV_ALIGN_CENTER);
+    
+    // RSSI bar
+    ui_RSSIBar = lv_bar_create(ui_SettingsPanel);
+    lv_obj_set_width(ui_RSSIBar, 100);
+    lv_obj_set_height(ui_RSSIBar, 12);
+    lv_obj_set_x(ui_RSSIBar, 20);
+    lv_obj_set_y(ui_RSSIBar, -100);
+    lv_obj_set_align(ui_RSSIBar, LV_ALIGN_CENTER);
+    lv_bar_set_range(ui_RSSIBar, 0, 100);
+    lv_bar_set_value(ui_RSSIBar, 0, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(ui_RSSIBar, lv_color_hex(0x333333), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(ui_RSSIBar, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(ui_RSSIBar, lv_color_hex(0x22AA22), LV_PART_INDICATOR);
+    lv_obj_set_style_radius(ui_RSSIBar, 4, LV_PART_MAIN);
+    lv_obj_set_style_radius(ui_RSSIBar, 4, LV_PART_INDICATOR);
+    
+    // RSSI text label (e.g. "-65 dBm (70%)")
+    ui_RSSILabel = lv_label_create(ui_SettingsPanel);
+    lv_label_set_text(ui_RSSILabel, "--");
+    lv_obj_set_style_text_color(ui_RSSILabel, lv_color_hex(0x808080), 0);
+    lv_obj_set_x(ui_RSSILabel, 125);
+    lv_obj_set_y(ui_RSSILabel, -100);
+    lv_obj_set_align(ui_RSSILabel, LV_ALIGN_CENTER);
     
     // Auto-scroll dropdown (placed above the instruction)
     ui_AutoScrollLabel = lv_label_create(ui_SettingsPanel);
     lv_label_set_text(ui_AutoScrollLabel, "Auto-scroll:");
     lv_obj_set_style_text_color(ui_AutoScrollLabel, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_x(ui_AutoScrollLabel, -80);
-    lv_obj_set_y(ui_AutoScrollLabel, 110);
+    lv_obj_set_y(ui_AutoScrollLabel, 120);
     lv_obj_set_align(ui_AutoScrollLabel, LV_ALIGN_CENTER);
 
     ui_AutoScrollDrop = lv_dropdown_create(ui_SettingsPanel);
@@ -363,7 +420,7 @@ extern "C" void ui_Settings_screen_init(void)
     lv_obj_set_width(ui_AutoScrollDrop, 140);
     lv_obj_set_height(ui_AutoScrollDrop, 32);
     lv_obj_set_x(ui_AutoScrollDrop, 40);
-    lv_obj_set_y(ui_AutoScrollDrop, 110);
+    lv_obj_set_y(ui_AutoScrollDrop, 120);
     lv_obj_set_align(ui_AutoScrollDrop, LV_ALIGN_CENTER);
 
     // Instruction text (moved below auto-scroll)
@@ -371,7 +428,7 @@ extern "C" void ui_Settings_screen_init(void)
     lv_label_set_text(instruction, "Swipe up to return");
     lv_obj_set_style_text_color(instruction, lv_color_hex(0x808080), 0);
     lv_obj_set_x(instruction, 0);
-    lv_obj_set_y(instruction, 160);
+    lv_obj_set_y(instruction, 170);
     lv_obj_set_align(instruction, LV_ALIGN_CENTER);
 
     // Set current selection from persisted value
