@@ -1013,14 +1013,56 @@ void handle_root() {
     config_server.send(200, "text/html", html);
 }
 
+void handle_scan_wifi() {
+    int n = WiFi.scanNetworks();
+    String json = "[";
+    for (int i = 0; i < n; i++) {
+        if (i > 0) json += ",";
+        String ssid = WiFi.SSID(i);
+        ssid.replace("\"", "\\\"");
+        json += "{\"ssid\":\"" + ssid + "\",\"rssi\":" + String(WiFi.RSSI(i))
+              + ",\"enc\":" + String(WiFi.encryptionType(i) != WIFI_AUTH_OPEN ? 1 : 0) + "}";
+    }
+    json += "]";
+    WiFi.scanDelete();
+    config_server.send(200, "application/json", json);
+}
+
+static String rssi_bar(int rssi) {
+    int pct = constrain(2 * (rssi + 100), 0, 100);
+    String color = (pct > 60) ? "#2a2" : (pct > 30) ? "#da2" : "#d22";
+    return String(rssi) + " dBm (" + String(pct) + "%) "
+         + "<span style='display:inline-block;width:80px;background:#eee;border-radius:3px;height:12px;vertical-align:middle'>"
+         + "<span style='display:inline-block;width:" + String(pct) + "%;background:" + color + ";height:100%;border-radius:3px'></span></span>";
+}
+
 void handle_network_page() {
     String html = "<html><head>";
     html += STYLE;
     html += "<title>Network Setup</title></head><body><div class='container'>";
     html += "<div class='tab-content'>";
     html += "<h2>Network Setup</h2>";
+
+    // WiFi status / signal strength panel
+    if (WiFi.isConnected()) {
+        html += "<div style='background:#e8f5e9;border:1px solid #a5d6a7;border-radius:6px;padding:10px;margin-bottom:14px;text-align:center'>";
+        html += "<b>Connected to:</b> " + WiFi.SSID() + "<br>";
+        html += "<b>IP:</b> " + WiFi.localIP().toString() + "<br>";
+        html += "<b>Signal:</b> " + rssi_bar(WiFi.RSSI());
+        html += "</div>";
+    } else {
+        html += "<div style='background:#fff3e0;border:1px solid #ffcc80;border-radius:6px;padding:10px;margin-bottom:14px;text-align:center'>";
+        html += "<b>WiFi:</b> Not connected (AP Mode)<br>";
+        html += "<b>AP IP:</b> " + WiFi.softAPIP().toString();
+        html += "</div>";
+    }
+
     html += "<form method='POST' action='/save-wifi'>";
-    html += "<div class='form-row'><label>SSID:</label><input name='ssid' type='text' value='" + saved_ssid + "'></div>";
+    html += "<div class='form-row'><label>SSID:</label>"
+            "<input id='ssid' name='ssid' type='text' value='" + saved_ssid + "' style='width:40%'>"
+            " <button type='button' id='scanBtn' onclick='scanWifi()' style='padding:6px 12px;cursor:pointer'>Scan</button>"
+            "</div>";
+    html += "<div id='scanResults' style='margin:0 0 10px 148px;display:none'></div>";
     html += "<div class='form-row'><label>Password:</label><input name='password' type='password' value='" + saved_password + "'></div>";
     html += "<div class='form-row'><label>SignalK Server:</label><input name='signalk_ip' type='text' value='" + saved_signalk_ip + "'></div>";
     html += "<div class='form-row'><label>SignalK Port:</label><input name='signalk_port' type='number' value='" + String(saved_signalk_port) + "'></div>";
@@ -1028,6 +1070,37 @@ void handle_network_page() {
     html += "<div style='text-align:center;margin-top:12px;'><button class='tab-btn' type='submit' style='padding:10px 18px;'>Save & Reboot</button></div>";
     html += "</form>";
     html += "<p style='text-align:center; margin-top:10px;'><a href='/'>Back</a></p>";
+
+    // JavaScript for WiFi scanning
+    html += "<script>"
+            "function scanWifi(){"
+              "var btn=document.getElementById('scanBtn');"
+              "var div=document.getElementById('scanResults');"
+              "btn.disabled=true;btn.textContent='Scanning...';"
+              "div.style.display='block';div.innerHTML='Scanning...';"
+              "fetch('/scan-wifi').then(r=>r.json()).then(nets=>{"
+                "if(!nets.length){div.innerHTML='No networks found.';btn.disabled=false;btn.textContent='Scan';return;}"
+                "nets.sort((a,b)=>b.rssi-a.rssi);"
+                "var seen={};"
+                "var t='<table style=\"width:100%;border-collapse:collapse;font-size:0.9em\">';"
+                "t+='<tr style=\"background:#e3edf7\"><th style=\"padding:4px 6px;text-align:left\">SSID</th><th>Signal</th><th>Sec</th><th></th></tr>';"
+                "nets.forEach(n=>{"
+                  "if(seen[n.ssid])return;seen[n.ssid]=1;"
+                  "var pct=Math.min(100,Math.max(0,2*(n.rssi+100)));"
+                  "var col=pct>60?'#2a2':pct>30?'#da2':'#d22';"
+                  "var bar='<span style=\"display:inline-block;width:60px;background:#eee;border-radius:3px;height:10px\">"
+                    "<span style=\"display:inline-block;width:'+pct+'%;background:'+col+';height:100%;border-radius:3px\"></span></span> '+n.rssi+'dBm';"
+                  "t+='<tr style=\"border-bottom:1px solid #ddd\"><td style=\"padding:4px 6px\">'+n.ssid+'</td><td style=\"text-align:center\">'+bar+'</td>"
+                    "<td style=\"text-align:center\">'+(n.enc?'&#128274;':'Open')+'</td>"
+                    "<td><button type=\"button\" style=\"padding:2px 8px;cursor:pointer\" onclick=\"pickSsid(\\''+n.ssid.replace(/'/g,\"\\\\'\")+'\\')\">&rarr;</button></td></tr>';"
+                "});"
+                "t+='</table>';div.innerHTML=t;"
+                "btn.disabled=false;btn.textContent='Scan';"
+              "}).catch(e=>{div.innerHTML='Scan failed: '+e;btn.disabled=false;btn.textContent='Scan';});"
+            "}"
+            "function pickSsid(s){document.getElementById('ssid').value=s;}"
+            "</script>";
+
     html += "</div></div></body></html>";
     config_server.send(200, "text/html", html);
 }
@@ -1282,6 +1355,7 @@ void setup_network() {
     config_server.on("/assets/upload", HTTP_POST, handle_assets_upload_post, handle_assets_upload);
     config_server.on("/assets/delete", HTTP_POST, handle_assets_delete);
     config_server.on("/network", handle_network_page);
+    config_server.on("/scan-wifi", HTTP_GET, handle_scan_wifi);
     config_server.on("/save-wifi", HTTP_POST, handle_save_wifi);
     config_server.on("/device", handle_device_page);
     config_server.on("/save-device", HTTP_POST, handle_save_device);
