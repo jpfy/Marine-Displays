@@ -1,6 +1,7 @@
 // Runtime hot-update helpers for updating backgrounds and icons without reboot
 #include "ui.h"
 #include "screen_config_c_api.h"
+#include "gauge_number_display.h"
 #include <lvgl.h>
 #include "esp_log.h"
 
@@ -139,6 +140,15 @@ bool apply_icons_for_screen(int s) {
         }
         any = true;
     }
+
+    // Display-type-aware: create/destroy gauge_number overlay
+    if (screen_configs[s].display_type == DISPLAY_TYPE_GAUGE_NUMBER) {
+        // Bottom gauge visibility follows show_bottom setting (allows 2 gauges + number)
+        gauge_number_display_create(s, screen_configs[s].gauge_num_center_font_size, screen_configs[s].gauge_num_center_font_color);
+    } else {
+        gauge_number_display_destroy(s);
+    }
+
     return any;
 }
 

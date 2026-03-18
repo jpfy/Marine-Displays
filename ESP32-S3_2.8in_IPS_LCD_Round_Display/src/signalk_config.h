@@ -43,6 +43,11 @@ enum ParamIndex {
 float get_sensor_value(int index);
 void set_sensor_value(int index, float value);
 
+// By-path lookups for extended display types (gauge+number, etc.)
+float get_sensor_value_by_path(const String& path);
+String get_sensor_unit_by_path(const String& path);
+String get_sensor_description_by_path(const String& path);
+
 // Backward compatibility helpers
 inline float get_frequency_hz() { return get_sensor_value(SCREEN1_RPM); }
 inline float get_temperature_k() { return get_sensor_value(SCREEN1_COOLANT_TEMP); }

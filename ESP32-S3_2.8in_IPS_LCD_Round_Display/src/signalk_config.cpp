@@ -1,10 +1,17 @@
 #include "signalk_config.h"
 #include "network_setup.h"
+#include "screen_config_c_api.h"
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
 #include <esp_system.h>
+#include <map>
+
+// Extended sensor storage for paths beyond the 10 gauge slots
+static std::map<String, float> extended_sensor_values;
+static std::map<String, String> extended_sensor_units;
+static std::map<String, String> extended_sensor_descriptions;
 
 // Global array to hold all sensor values (10 parameters)
 float g_sensor_values[TOTAL_PARAMS] = {
@@ -127,6 +134,45 @@ void init_sensor_mutex() {
     }
 }
 
+// By-path lookup: check fixed gauge paths first, then extended storage
+float get_sensor_value_by_path(const String& path) {
+    if (path.length() == 0) return NAN;
+    for (int i = 0; i < TOTAL_PARAMS; i++) {
+        if (signalk_paths[i] == path) {
+            return get_sensor_value(i);
+        }
+    }
+    if (sensor_mutex != NULL && xSemaphoreTake(sensor_mutex, pdMS_TO_TICKS(50))) {
+        auto it = extended_sensor_values.find(path);
+        float val = (it != extended_sensor_values.end()) ? it->second : NAN;
+        xSemaphoreGive(sensor_mutex);
+        return val;
+    }
+    return NAN;
+}
+
+String get_sensor_unit_by_path(const String& path) {
+    if (path.length() == 0) return "";
+    if (sensor_mutex != NULL && xSemaphoreTake(sensor_mutex, pdMS_TO_TICKS(50))) {
+        auto it = extended_sensor_units.find(path);
+        String unit = (it != extended_sensor_units.end()) ? it->second : "";
+        xSemaphoreGive(sensor_mutex);
+        return unit;
+    }
+    return "";
+}
+
+String get_sensor_description_by_path(const String& path) {
+    if (path.length() == 0) return "";
+    if (sensor_mutex != NULL && xSemaphoreTake(sensor_mutex, pdMS_TO_TICKS(50))) {
+        auto it = extended_sensor_descriptions.find(path);
+        String desc = (it != extended_sensor_descriptions.end()) ? it->second : "";
+        xSemaphoreGive(sensor_mutex);
+        return desc;
+    }
+    return "";
+}
+
 // WebSocket event handler
 static void wsEvent(WStype_t type, uint8_t * payload, size_t length) {
     if (type == WStype_CONNECTED) {
@@ -143,6 +189,15 @@ static void wsEvent(WStype_t type, uint8_t * payload, size_t length) {
                 JsonObject s = subs.createNestedObject();
                 s["path"] = signalk_paths[i];
                 s["period"] = 0; // instant updates (server may push immediately)
+            }
+        }
+        // Also subscribe to gauge_num_center_path for each screen
+        for (int s = 0; s < NUM_SCREENS; s++) {
+            if (screen_configs[s].display_type == DISPLAY_TYPE_GAUGE_NUMBER &&
+                strlen(screen_configs[s].gauge_num_center_path) > 0) {
+                JsonObject sub = subs.createNestedObject();
+                sub["path"] = screen_configs[s].gauge_num_center_path;
+                sub["period"] = 0;
             }
         }
         String out;
@@ -170,11 +225,34 @@ static void wsEvent(WStype_t type, uint8_t * payload, size_t length) {
                     if (!val.containsKey("path") || !val.containsKey("value")) continue;
                     const char* path = val["path"];
                     float value = val["value"].as<float>();
+                    bool matched_fixed = false;
                     for (int i = 0; i < TOTAL_PARAMS; i++) {
                         if (signalk_paths[i].length() > 0 && signalk_paths[i].equals(path)) {
                             set_sensor_value(i, value);
-                            // Serial logging for visibility
-                            Serial.print("WS Path["); Serial.print(i); Serial.print("]: "); Serial.println(value);
+                            matched_fixed = true;
+                        }
+                    }
+                    // Also store in extended maps (for gauge_num_center_path lookups)
+                    if (sensor_mutex != NULL && xSemaphoreTake(sensor_mutex, pdMS_TO_TICKS(50))) {
+                        extended_sensor_values[String(path)] = value;
+                        xSemaphoreGive(sensor_mutex);
+                    }
+                }
+
+                // Capture meta (units/descriptions) if present
+                if (update.containsKey("meta")) {
+                    JsonArray metas = update["meta"].as<JsonArray>();
+                    for (JsonVariant m : metas) {
+                        const char* mpath = m["path"] | "";
+                        if (strlen(mpath) == 0) continue;
+                        if (sensor_mutex != NULL && xSemaphoreTake(sensor_mutex, pdMS_TO_TICKS(50))) {
+                            if (m.containsKey("units")) {
+                                extended_sensor_units[String(mpath)] = String(m["units"].as<const char*>());
+                            }
+                            if (m.containsKey("description")) {
+                                extended_sensor_descriptions[String(mpath)] = String(m["description"].as<const char*>());
+                            }
+                            xSemaphoreGive(sensor_mutex);
                         }
                     }
                 }
@@ -330,6 +408,15 @@ void refresh_signalk_subscriptions() {
             JsonObject s = subs.createNestedObject();
             s["path"] = signalk_paths[i];
             s["period"] = 0;
+        }
+    }
+    // Also subscribe to gauge_num_center_path for each screen
+    for (int s = 0; s < NUM_SCREENS; s++) {
+        if (screen_configs[s].display_type == DISPLAY_TYPE_GAUGE_NUMBER &&
+            strlen(screen_configs[s].gauge_num_center_path) > 0) {
+            JsonObject sub = subs.createNestedObject();
+            sub["path"] = screen_configs[s].gauge_num_center_path;
+            sub["period"] = 0;
         }
     }
     String out;

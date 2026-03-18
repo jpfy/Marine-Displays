@@ -14,6 +14,10 @@ bool test_mode = false;
 #include "network_setup.h"
 #include "gauge_config.h"
 #include "needle_style.h"
+#include "gauge_number_display.h"
+
+// Apply saved screen visuals (backgrounds, icons, display type) after ui_init()
+extern bool apply_all_screen_visuals();
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -193,12 +197,67 @@ void initialize_needle_positions() {
 }
 
 // Update both needles for the active screen using live Signal K sensor values
+// Update center number for Gauge+Number display type
+static void update_gauge_number_center(int screen_num) {
+    int s = screen_num - 1; // 0-based index
+    if (s < 0 || s >= NUM_SCREENS) return;
+    if (screen_configs[s].display_type != DISPLAY_TYPE_GAUGE_NUMBER) return;
+
+    String path = String(screen_configs[s].gauge_num_center_path);
+    if (path.length() == 0) return;
+
+    float raw = get_sensor_value_by_path(path);
+    if (isnan(raw)) return;
+
+    // Unit conversion (SI → display units)
+    String unit = get_sensor_unit_by_path(path);
+    String desc = get_sensor_description_by_path(path);
+    float display_val = raw;
+    String display_unit = unit;
+
+    // Temperature: K → °C
+    if (path.indexOf("temperature") >= 0 || path.indexOf("Temperature") >= 0 || unit == "K") {
+        display_val = raw - 273.15f;
+        display_unit = String("\xC2\xB0") + "C";
+    }
+    // Pressure: Pa → bar
+    else if (path.indexOf("pressure") >= 0 || unit == "Pa") {
+        display_val = raw / 100000.0f;
+        display_unit = "bar";
+    }
+    // Ratio → %
+    else if (unit == "ratio") {
+        display_val = raw * 100.0f;
+        display_unit = "%";
+    }
+    // Frequency: Hz → RPM
+    else if (path.indexOf("revolutions") >= 0 || unit == "Hz") {
+        display_val = raw * 60.0f;
+        display_unit = "RPM";
+    }
+    // Speed: m/s → knots
+    else if (path.indexOf("speed") >= 0 || unit == "m/s") {
+        display_val = raw * 1.94384f;
+        display_unit = "kn";
+    }
+    // Angle: rad → degrees
+    else if (unit == "rad") {
+        display_val = raw * 57.2958f;
+        display_unit = String("\xC2\xB0");
+    }
+
+    gauge_number_display_update_center(s, display_val, display_unit.c_str(), desc.c_str());
+}
+
 extern "C" void update_needles_for_screen(int screen_num) {
     // Index 1-5 correspond to Screen1..Screen5
     if (screen_num < 1 || screen_num > 5) return;
     // If test mode is active, skip all live data updates
     extern bool test_mode;
     if (test_mode) return;
+
+    // Update center number for Gauge+Number screens
+    update_gauge_number_center(screen_num);
 
     // Default angles: top needles at 0°, bottom needles at 180°
     // Use the global `last_top_angle` / `last_bottom_angle` defined at file scope
@@ -430,6 +489,11 @@ void setup() {
     Serial.println("Needle positions initialized");
     Serial.flush();
     
+    // Apply saved screen visuals (backgrounds, icons, display type)
+    apply_all_screen_visuals();
+    Serial.println("Screen visuals applied from saved config");
+    Serial.flush();
+
     // Initialize gauge configuration
     gauge_config_init();
     Serial.println("Gauge configuration loaded");

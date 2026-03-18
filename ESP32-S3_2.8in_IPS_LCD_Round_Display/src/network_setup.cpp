@@ -27,6 +27,15 @@ extern "C" void show_fallback_error_screen_if_needed() {
                 }
             }
         }
+        // Also check display_type, icon_paths, background_path
+        if (all_default) {
+            if (screen_configs[s].display_type != 0 ||
+                screen_configs[s].icon_paths[0][0] != '\0' ||
+                screen_configs[s].icon_paths[1][0] != '\0' ||
+                screen_configs[s].background_path[0] != '\0') {
+                all_default = false;
+            }
+        }
     }
     if (all_default) {
         Serial.println("[ERROR] All screen configs are default/blank. Showing fallback error screen.");
@@ -131,6 +140,7 @@ void handle_toggle_test_mode();
 void handle_test_gauge();
 void handle_nvs_test();
 void handle_set_screen();
+void handle_gauges_screen();
 // Device settings handlers
 void handle_device_page();
 void handle_save_device();
@@ -165,6 +175,37 @@ static volatile bool skip_next_load_preferences = false;
 // Namespaces used for Preferences / NVS
 const char* SETTINGS_NAMESPACE = "settings";
 const char* PREF_NAMESPACE = "gaugeconfig";
+
+// Asset file lists — populated once at startup by scan_sd_assets().
+// Reusing these avoids a live SD scan during HTTP handling which causes
+// SD/WiFi DMA contention on ESP32-S3.
+static std::vector<String> g_iconFiles;
+static std::vector<String> g_bgFiles;
+
+// Single shared HTML buffer for handle_gauges_page() and handle_gauges_screen().
+String g_http_html_buf;
+bool   g_http_html_buf_reserved = false;
+
+static void scan_sd_assets() {
+    g_iconFiles.clear();
+    g_bgFiles.clear();
+    File root = SD_MMC.open("/assets");
+    if (root && root.isDirectory()) {
+        File file = root.openNextFile();
+        while (file) {
+            String fname = file.name();
+            file = root.openNextFile();
+            if (fname.startsWith("._") || fname.startsWith("_")) continue;
+            String lname = fname;
+            lname.toLowerCase();
+            String fullPath = fname.startsWith("/assets/") ? fname : "/assets/" + fname;
+            if (lname.endsWith(".png"))      g_iconFiles.push_back(String("S:/") + fullPath);
+            else if (lname.endsWith(".bin")) g_bgFiles.push_back(String("S:/") + fullPath);
+        }
+    }
+    Serial.printf("[ASSET SCAN] Cached %u bg files, %u icon files\n",
+                  (unsigned)g_bgFiles.size(), (unsigned)g_iconFiles.size());
+}
 
 // Ensure ScreenConfig/screen_configs symbol visible
 #include "screen_config_c_api.h"
@@ -485,11 +526,21 @@ void load_preferences() {
     bool restored_from_sd = false;
     for (int s = 0; s < NUM_SCREENS; ++s) {
         bool is_default = true;
+        // Check calibration data
         for (int g = 0; g < 2 && is_default; ++g) {
             for (int p = 0; p < 5; ++p) {
                 if (screen_configs[s].cal[g][p].angle != 0 || screen_configs[s].cal[g][p].value != 0.0f) {
                     is_default = false; break;
                 }
+            }
+        }
+        // Also check display_type, icon_paths, and background_path
+        if (is_default) {
+            if (screen_configs[s].display_type != 0 ||
+                screen_configs[s].icon_paths[0][0] != '\0' ||
+                screen_configs[s].icon_paths[1][0] != '\0' ||
+                screen_configs[s].background_path[0] != '\0') {
+                is_default = false;
             }
         }
         if (is_default) {
@@ -556,422 +607,469 @@ void load_preferences() {
 }
 
 void handle_gauges_page() {
-    // --- Scan SD card for available asset files and split into background and icon lists ---
-    std::vector<String> iconFiles; // only .png files for icons
-    std::vector<String> bgFiles;   // only .bin files for large backgrounds
-    {
-        File root = SD_MMC.open("/assets");
-        if (root && root.isDirectory()) {
-            File file = root.openNextFile();
-            while (file) {
-                String fname = file.name();
-                Serial.printf("[ASSET SCAN] Found file: %s\n", fname.c_str());
-                // Exclude macOS resource fork files (._ prefix)
-                if (fname.startsWith("._")) {
-                    file = root.openNextFile();
-                    continue;
-                }
-                String lname = fname;
-                lname.toLowerCase();
-                // sanitize filenames that start with underscore
-                if (lname.startsWith("_")) { file = root.openNextFile(); continue; }
-                // Always add /assets/ prefix if not present
-                String fullPath = fname;
-                if (!fname.startsWith("/assets/")) {
-                    fullPath = "/assets/" + fname;
-                }
-                if (lname.endsWith(".png")) {
-                    iconFiles.push_back(String("S:/") + fullPath);
-                } else if (lname.endsWith(".bin")) {
-                    bgFiles.push_back(String("S:/") + fullPath);
-                }
-                file = root.openNextFile();
-            }
-        }
-    }
-    // --- End SD scan ---
-    // Reload config from storage unless a save just occurred — in that case
-    // prefer the in-memory `screen_configs` so the UI shows the recently-saved values.
-    if (!skip_next_load_preferences) {
-        load_preferences();
-    } else {
-        // consume the skip flag and keep current in-memory configs
-        skip_next_load_preferences = false;
-    }
-    // Start chunked HTTP response immediately — avoids holding the whole page (~50KB) in RAM at once.
+    // Lightweight AJAX shell — per-screen config loaded on demand via
+    // /gauges/screen?s=N.  Keeps peak HTML under ~4 KB.
+    skip_next_load_preferences = false;
+
+    // Reload asset lists so newly-uploaded files appear
+    scan_sd_assets();
+
+    extern bool test_mode;
+
     config_server.setContentLength(CONTENT_LENGTH_UNKNOWN);
     config_server.send(200, "text/html; charset=utf-8", "");
-    String html;
-    html.reserve(4096);
-    // Lambda: send buffered html to client and fully release the String's internal buffer.
-    // Using String() + reserve() frees the oversized capacity block each time, preventing
-    // heap fragmentation.
-    // vTaskDelay(1) yields to FreeRTOS for 1ms so the WiFi/TCP stack can process keepalives
-    // and prevent the SK WebSocket ping from timing out during long page generation.
-    // NOTE: Do NOT use Arduino yield() here — it re-enters handleClient() mid-response and hangs.
-    extern void Lvgl_Loop(void); // keep display ticking during slow page generation
+
+    String& html = g_http_html_buf;
+    if (!g_http_html_buf_reserved) {
+        html.reserve(4096);
+        g_http_html_buf_reserved = true;
+    }
+    html.clear();
+    extern void Lvgl_Loop(void);
     auto flushHtml = [&]() {
         if (html.length() > 0) {
             config_server.sendContent(html);
-            html = String(); // fully free internal buffer (not just set length=0)
-            html.reserve(4096);
-            Lvgl_Loop(); // tick LVGL so the display doesn't freeze during long page generation
-            vTaskDelay(1); // 1ms FreeRTOS yield — safe, does NOT re-enter handleClient()
+            html.clear();
+            Lvgl_Loop();
+            vTaskDelay(1);
         }
     };
-    html = "<!DOCTYPE html><html><head>";
+
+    // ── HTML head + CSS ──────────────────────────────────────────────
+    html += "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
     html += STYLE;
     html += "<title>Gauge Calibration</title></head><body><div class='container'>";
-    flushHtml(); // flush header + styles before body content
-    extern bool test_mode;
     html += "<h2>Gauge Calibration</h2>";
-    html += "<form method='POST' action='/toggle-test-mode' style='margin-bottom:16px;text-align:center;'>";
-    // hidden active tab for toggle button to preserve current tab
-    html += "<input type='hidden' name='active_tab' id='active_tab_toggle' value='0'>";
-    html += "<input type='hidden' name='toggle' value='1'>";
-    html += "<button type='submit' style='padding:8px 16px;font-size:1em;'>";
+
+    // Test mode toggle — AJAX, no full page reload
+    html += "<div style='margin-bottom:16px;text-align:center;'>";
+    html += "<button type='button' id='testModeBtn' onclick='toggleTestMode()' style='padding:8px 16px;font-size:1em;'>";
     html += (test_mode ? "Disable Setup Mode" : "Enable Setup Mode");
     html += "</button> ";
-    html += "<span style='font-weight:bold;color:";
+    html += "<span id='testModeLabel' style='font-weight:bold;color:";
     html += (test_mode ? "#388e3c;'>SETUP MODE ON" : "#b71c1c;'>SETUP MODE OFF");
-    html += "</span></form>";
-        // --- Scan SD card for available image files (PNG, BIN, JPG, BMP, GIF) ---
-        // ...existing code...
-        // --- End SD scan ---
-    // Calibration form start
-    html += "<form id='calibrationForm' method='POST' action='/save-gauges'>";
-    // Hidden field to remember which tab the user had active when submitting
-    html += "<input type='hidden' name='active_tab' id='active_tab' value='0'>";
+    html += "</span></div>";
+
+    // Form wrapper — screen content is injected inside via AJAX
+    html += "<form id='calibrationForm' method='POST' action='/save-gauges' accept-charset='utf-8'>";
+    html += "<input type='hidden' name='save_screen' id='save_screen' value='0'>";
+
     // Tab bar
     html += "<div style='margin-bottom:16px; text-align:center;'>";
-        for (int s = 0; s < NUM_SCREENS; ++s) {
-            // When clicked: switch the web tab AND request the device to show that screen
-            int screen_one_based = s + 1;
-            html += "<button type='button' class='tab-btn' id='tabbtn_" + String(s) + "' onclick='(function(){ showScreenTab(" + String(s) + "); fetch(\"/set-screen?screen=" + String(screen_one_based) + "\", {method:\"GET\"}).catch(function(){ }); })()' style='margin:0 4px; padding:8px 16px; font-size:1em;'>Screen " + String(screen_one_based) + "</button>";
-        }
+    for (int s = 0; s < NUM_SCREENS; ++s) {
+        html += "<button type='button' class='tab-btn' id='tabbtn_" + String(s) +
+                "' onclick='showScreenTab(" + String(s) +
+                ")' style='margin:0 4px;padding:8px 16px;font-size:1em;'>Screen " +
+                String(s + 1) + "</button>";
+    }
     html += "</div>";
-    flushHtml(); // flush tab buttons before per-screen content
-    // Tab content
-    for (int s = 0; s < NUM_SCREENS; ++s) {
-        html += "<div class='tab-content' id='tabcontent_" + String(s) + "' style='display:" + (s==0?"block":"none") + ";'>";
-        html += "<h3>Screen " + String(s+1) + "</h3>";
-        // Background selection (per-screen)
-        String savedBg = String(screen_configs[s].background_path);
-        String savedBgNorm = savedBg;
-        savedBgNorm.toLowerCase();
-        savedBgNorm.replace("S://", "S:/");
-        while (savedBgNorm.indexOf("//") != -1) savedBgNorm.replace("//", "/");
-        html += "<div style='margin-bottom:8px;'><label>Background: <select name='bg_" + String(s) + "'>";
-        html += "<option value=''";
-        if (savedBg.length() == 0) html += " selected='selected'";
-        html += ">Default</option>";
-        for (const auto& b : bgFiles) {
-            String iconNorm = b;
-            iconNorm.toLowerCase();
-            iconNorm.replace("S://", "S:/");
-            while (iconNorm.indexOf("//") != -1) iconNorm.replace("//", "/");
-            html += "<option value='" + b + "'";
-            if (iconNorm == savedBgNorm && savedBg.length() > 0) html += " selected='selected'";
-            html += ">" + b + "</option>";
-        }
-        html += "</select></label></div>";
-        for (int g = 0; g < 2; ++g) {
-            // When rendering UI: allow user to hide bottom gauge per-screen
-            if (g == 0) {
-                html += "<div style='margin-bottom:8px;'><label>Show Bottom Gauge: <input type='checkbox' name='showbottom_" + String(s) + "'";
-                if (screen_configs[s].show_bottom) html += " checked";
-                html += "></label></div>";
-            }
-            int idx = s * 2 + g;
-            // If bottom gauge is disabled, skip rendering its configuration
-            if (g == 1 && !screen_configs[s].show_bottom) {
-                html += "<div style='margin-bottom:8px;'><em>Bottom gauge disabled for this screen.</em></div>";
-                continue;
-            }
-            html += "<b>" + String(g == 0 ? "Top Gauge" : "Bottom Gauge") + "</b>";
-            // SignalK Path: show immediately above the icon options (per-gauge)
-            html += "<div style='margin-bottom:8px;'><label>SignalK Path: <input name='skpath_" + String(s) + "_" + String(g) + "' type='text' value='" + signalk_paths[idx] + "' style='width:80%'></label></div>";
 
-            // Calibration points table (moved to be under SignalK Path)
-            html += "<table class='table'><tr><th>Point</th><th>Angle</th><th>Value</th><th>Test</th></tr>";
-            for (int p = 0; p < 5; ++p) {
-                html += "<tr><td>" + String(p+1) + "</td>";
-                html += "<td><input name='" + String("angle_") + s + "_" + g + "_" + p + "' type='number' value='" + String(gauge_cal[s][g][p].angle) + "'></td>";
-                html += "<td><input name='" + String("value_") + s + "_" + g + "_" + p + "' type='number' step='any' value='" + String(gauge_cal[s][g][p].value) + "'></td>";
-                html += "<td id='testbtn_" + String(s) + "_" + String(g) + "_" + String(p) + "'></td></tr>";
-            }
-            html += "</table>";
+    // Placeholder — filled by showScreenTab() AJAX
+    html += "<div id='screen-content' style='min-height:200px;'>";
+    html += "<p style='text-align:center;color:#888;padding:40px 0;'>Loading screen configuration...</p>";
+    html += "</div>";
 
-            // Icon controls (grouped visually)
-            String savedIcon = String(screen_configs[s].icon_paths[g]);
-            String savedIconNorm = savedIcon;
-            savedIconNorm.toLowerCase();
-            savedIconNorm.replace("S://", "S:/");
-            while (savedIconNorm.indexOf("//") != -1) savedIconNorm.replace("//", "/");
-            html += "<div class='icon-section'><div class='icon-row'>";
-            html += "<div style='margin-bottom:8px;'><label>Icon: <select name='icon_" + String(s) + "_" + String(g) + "'>";
-            html += "<option value=''";
-            if (savedIcon.length() == 0) html += " selected='selected'";
-            html += ">None</option>";
-            for (const auto& icon : iconFiles) {
-                String iconNorm = icon;
-                iconNorm.toLowerCase();
-                iconNorm.replace("S://", "S:/");
-                while (iconNorm.indexOf("//") != -1) iconNorm.replace("//", "/");
-                html += "<option value='" + icon + "'";
-                if (iconNorm == savedIconNorm && savedIcon.length() > 0) html += " selected='selected'";
-                html += ">" + icon + "</option>";
-            }
-            html += "</select></label></div>";
-            // Icon position selector (per-gauge)
-            int curPos = screen_configs[s].icon_pos[g];
-            html += "<div style='margin-bottom:8px;'><label>Icon Position: <select name='iconpos_" + String(s) + "_" + String(g) + "'>";
-            struct { int v; const char *n; } posopts[] = { {0,"Top"}, {1,"Right"}, {2,"Bottom"}, {3,"Left"} };
-            for (int _po = 0; _po < 4; ++_po) {
-                html += "<option value='" + String(posopts[_po].v) + "'";
-                if (curPos == posopts[_po].v) html += " selected='selected'";
-                html += ">" + String(posopts[_po].n) + "</option>";
-            }
-            html += "</select></label></div>";
-            // close icon-row but keep icon-section open so min/max controls are grouped with icons
-            html += "</div>"; // close icon-row
-
-            // Zone min/max/color/transparent/buzzer controls — include inside icon-section
-            html += "<div class='zone-row'>";
-            for (int i = 1; i <= 4; ++i) {
-                float minVal = screen_configs[s].min[g][i];
-                float maxVal = screen_configs[s].max[g][i];
-                String colorVal = String(screen_configs[s].color[g][i]);
-                bool transVal = screen_configs[s].transparent[g][i] != 0;
-                bool bzrVal = screen_configs[s].buzzer[g][i] != 0;
-                html += "<div class='zone-item'><label>Min " + String(i) + ": <input name='mnv" + String(s) + String(g) + String(i) + "' type='number' step='any' value='" + String(minVal) + "' style='width:100px'></label></div>";
-                html += "<div class='zone-item'><label>Max " + String(i) + ": <input name='mxv" + String(s) + String(g) + String(i) + "' type='number' step='any' value='" + String(maxVal) + "' style='width:100px'></label></div>";
-                html += "<div class='zone-item'><label>Color: <input class='color-input' name='clr" + String(s) + String(g) + String(i) + "' type='color' value='" + colorVal + "'></label></div>";
-                html += "<div class='zone-item small'><label>Transparent <input name='trn" + String(s) + String(g) + String(i) + "' type='checkbox'";
-                if (transVal) html += " checked";
-                html += "></label></div>";
-                html += "<div class='zone-item small'><label>Buzzer <input name='bzr" + String(s) + String(g) + String(i) + "' type='checkbox'";
-                if (bzrVal) html += " checked";
-                html += "></label></div>";
-            }
-            html += "</div>";
-
-            html += "</div>"; // close icon-section
-            flushHtml(); // flush after each gauge to keep heap usage bounded
-        }
-        html += "</div>";
-        flushHtml(); // flush each screen tab
-    }
-    // Tab JS and Apply button (ensure inside form)
-    html += "<div style='text-align:center; margin-top:16px;'><input type='submit' name='apply' value='Apply (no reboot)' style='padding:10px 24px; font-size:1.1em;'></div>";
+    // Apply button
+    html += "<div style='text-align:center;margin-top:16px;'>";
+    html += "<input type='button' id='saveBtn' value='Apply (no reboot)' onclick='ajaxSave()' style='padding:10px 24px;font-size:1.1em;'>";
+    html += "</div>";
     html += "</form>";
-    // Now add the test buttons outside the main form
-    // Flush per-screen to stay within ~4KB chunks — 50 forms × ~350 chars ≈ 17KB total.
-    for (int s = 0; s < NUM_SCREENS; ++s) {
-        for (int g = 0; g < 2; ++g) {
-            for (int p = 0; p < 5; ++p) {
-                html += "<form style='display:none;' id='testform_" + String(s) + "_" + String(g) + "_" + String(p) + "' method='POST' action='/test-gauge'>";
-                html += "<input type='hidden' name='screen' value='" + String(s) + "'>";
-                html += "<input type='hidden' name='gauge' value='" + String(g) + "'>";
-                html += "<input type='hidden' name='point' value='" + String(p) + "'>";
-                html += "<input type='hidden' name='angle' id='testangle_" + String(s) + "_" + String(g) + "_" + String(p) + "' value=''>";
-                html += "</form>";
-            }
-        }
-        flushHtml(); // flush after each screen's test forms (~10 forms at a time)
-    }
-    flushHtml(); // flush before JavaScript block — JS alone can be 3-5KB
-    html += "<script>function showScreenTab(idx){\n";
-    html += "  for(var s=0;s<" + String(NUM_SCREENS) + ";++s){\n";
-    html += "    var el = document.getElementById('tabcontent_'+s); if(el) el.style.display=(s==idx?'block':'none');\n";
-    html += "    var btn=document.getElementById('tabbtn_'+s);\n";
-    html += "    if(btn)btn.style.background=(s==idx?'#e3eaf6':'#f4f6fa');\n";
+    html += "<p style='text-align:center;'><a href='/'>Back</a></p>";
+    flushHtml();
+
+    // ── JavaScript — AJAX tab loader, save, toggle ─────────────────
+    html += "<script>\n";
+    html += "var NUM_SCREENS=" + String(NUM_SCREENS) + ";\n";
+    html += "var currentTab=-1;\n";
+
+    // showScreenTab: fetch a single screen's config HTML from the device
+    html += "function showScreenTab(idx){\n";
+    html += "  if(idx===currentTab) return;\n";
+    html += "  currentTab=idx;\n";
+    html += "  document.getElementById('save_screen').value=idx;\n";
+    html += "  for(var s=0;s<NUM_SCREENS;s++){\n";
+    html += "    var b=document.getElementById('tabbtn_'+s);\n";
+    html += "    if(b) b.style.background=(s===idx?'#e3eaf6':'#f4f6fa');\n";
     html += "  }\n";
-    html += "  var hidden = document.getElementById('active_tab'); if(hidden) hidden.value = idx;\n";
-    html += "  var hidden2 = document.getElementById('active_tab_toggle'); if(hidden2) hidden2.value = idx;\n";
+    html += "  var cont=document.getElementById('screen-content');\n";
+    html += "  cont.innerHTML='<p style=\"text-align:center;color:#888;padding:40px 0;\">Loading...</p>';\n";
+    html += "  fetch('/gauges/screen?s='+idx)\n";
+    html += "    .then(function(r){return r.text();})\n";
+    html += "    .then(function(h){\n";
+    html += "      cont.innerHTML=h;\n";
+    html += "      initScreenTab(idx);\n";
+    html += "    })\n";
+    html += "    .catch(function(e){\n";
+    html += "      cont.innerHTML='<p style=\"color:red;text-align:center;\">Failed to load – '+e+'</p>';\n";
+    html += "    });\n";
     html += "  try{ history.replaceState && history.replaceState(null,null,'#tab'+idx); }catch(e){}\n";
     html += "}\n";
-    flushHtml(); // flush showScreenTab function before DOMContentLoaded block
-    html += "document.addEventListener('DOMContentLoaded',function(){\n";
-    html += "  var testMode = " + String(test_mode ? "true" : "false") + ";\n";
-    html += "  for (var s = 0; s < " + String(NUM_SCREENS) + "; ++s) {\n";
-    html += "    for (var g = 0; g < 2; ++g) {\n";
-    html += "      for (var p = 0; p < 5; ++p) {\n";
-    html += "        var btn = document.createElement('button');\n";
-    html += "        btn.type = 'button';\n";
-    html += "        btn.innerText = 'Test';\n";
-    html += "        btn.disabled = !testMode;\n";
-    html += "        btn.onclick = (function(ss,gg,pp){ return function(){\n";
-    html += "          var angleInput = document.querySelector('input[name=\"angle_'+ss+'_'+gg+'_'+pp+'\"]');\n";
-    html += "          var testAngle = document.getElementById('testangle_'+ss+'_'+gg+'_'+pp);\n";
-    html += "          if(angleInput && testAngle){ testAngle.value = angleInput.value; }\n";
-    html += "          document.getElementById('testform_'+ss+'_'+gg+'_'+pp).submit();\n";
-    html += "        }; })(s,g,p);\n";
-    html += "        var holder = document.getElementById('testbtn_'+s+'_'+g+'_'+p); if(holder) holder.appendChild(btn);\n";
-    html += "      }\n";
+
+    // initScreenTab: called after injecting screen HTML — set up toggles
+    html += "function initScreenTab(s){\n";
+    html += "  toggleGaugeConfig(s);\n";
+    html += "}\n";
+
+    // toggleGaugeConfig — show/hide Gauge+Number config section
+    html += "function toggleGaugeConfig(screen){\n";
+    html += "  var sel=document.querySelector('select[name=\"dtype_'+screen+'\"]');\n";
+    html += "  if(!sel) return;\n";
+    html += "  var gnDiv=document.getElementById('gnumcfg_'+screen);\n";
+    html += "  if(gnDiv) gnDiv.style.display=(sel.value==='4'?'block':'none');\n";
+    html += "}\n";
+
+    // AJAX save — POST only the visible screen's fields
+    html += "function ajaxSave(){\n";
+    html += "  var btn=document.getElementById('saveBtn');\n";
+    html += "  if(btn){btn.disabled=true;btn.value='Saving...';}\n";
+    html += "  var form=document.getElementById('calibrationForm');\n";
+    html += "  var params=new URLSearchParams(new FormData(form)).toString();\n";
+    html += "  fetch('/save-gauges',{method:'POST',\n";
+    html += "    headers:{'Content-Type':'application/x-www-form-urlencoded'},\n";
+    html += "    body:params})\n";
+    html += "  .then(function(r){return r.json();})\n";
+    html += "  .then(function(j){\n";
+    html += "    if(btn){btn.disabled=false;btn.value='Saved!';\n";
+    html += "    setTimeout(function(){btn.value='Apply (no reboot)';},2000);}\n";
+    html += "  })\n";
+    html += "  .catch(function(e){\n";
+    html += "    console.error('ajaxSave error',e);\n";
+    html += "    if(btn){btn.disabled=false;btn.value='Error - retry';}\n";
+    html += "  });\n";
+    html += "}\n";
+
+    // Toggle test mode via AJAX
+    html += "function toggleTestMode(){\n";
+    html += "  fetch('/toggle-test-mode',{method:'POST'})\n";
+    html += "  .then(function(r){return r.json();})\n";
+    html += "  .then(function(j){\n";
+    html += "    var btn=document.getElementById('testModeBtn');\n";
+    html += "    var lbl=document.getElementById('testModeLabel');\n";
+    html += "    if(j.test_mode){\n";
+    html += "      if(btn)btn.textContent='Disable Setup Mode';\n";
+    html += "      if(lbl){lbl.style.color='#388e3c';lbl.textContent='SETUP MODE ON';}\n";
+    html += "    } else {\n";
+    html += "      if(btn)btn.textContent='Enable Setup Mode';\n";
+    html += "      if(lbl){lbl.style.color='#b71c1c';lbl.textContent='SETUP MODE OFF';}\n";
     html += "    }\n";
-    html += "  }\n";
-    html += "  // Restore active tab from URL hash if present, else default to 0\n";
-    html += "  var initial = 0; if(location.hash && location.hash.indexOf('#tab')===0){ initial = parseInt(location.hash.replace('#tab',''))||0; }\n";
+    html += "    var prev=currentTab; currentTab=-1; showScreenTab(prev>=0?prev:0);\n";
+    html += "  }).catch(function(e){console.error(e);});\n";
+    html += "}\n";
+
+    // Test gauge point via AJAX
+    html += "function testGaugePoint(s,g,p){\n";
+    html += "  var ai=document.querySelector('input[name=\"angle_'+s+'_'+g+'_'+p+'\"]');\n";
+    html += "  var angle=ai?ai.value:'0';\n";
+    html += "  fetch('/test-gauge',{method:'POST',\n";
+    html += "    headers:{'Content-Type':'application/x-www-form-urlencoded'},\n";
+    html += "    body:'screen='+s+'&gauge='+g+'&point='+p+'&angle='+angle})\n";
+    html += "  .catch(function(e){console.error(e);});\n";
+    html += "}\n";
+
+    // Load first tab on page load
+    html += "document.addEventListener('DOMContentLoaded',function(){\n";
+    html += "  var initial=0;\n";
+    html += "  if(location.hash&&location.hash.indexOf('#tab')===0) initial=parseInt(location.hash.replace('#tab',''))||0;\n";
     html += "  showScreenTab(initial);\n";
-    html += "});</script>";
-    html += "<p style='text-align:center;'><a href='/'>Back</a></p>";
+    html += "});\n";
+    html += "</script>\n";
     html += "</div></body></html>";
     flushHtml();
     config_server.sendContent(""); // close chunked transfer
 }
 
-void handle_save_gauges() {
-    if (config_server.method() == HTTP_POST) {
-        bool reboot_needed = false;
-        for (int s = 0; s < NUM_SCREENS; ++s) {
-            for (int g = 0; g < 2; ++g) {
-                int idx = s * 2 + g;
-                // Save SignalK path
-                String skpathKey = "skpath_" + String(s) + "_" + String(g);
-                if (config_server.hasArg(skpathKey)) {
-                    signalk_paths[idx] = config_server.arg(skpathKey);
-                }
-                // Save icon selection
-                String iconKey = "icon_" + String(s) + "_" + String(g);
-                String iconValue = config_server.arg(iconKey);
-                iconValue.replace("S://", "S:/");
-                while (iconValue.indexOf("//") != -1) iconValue.replace("//", "/");
-                // Icon changes are now handled by hot-apply, no reboot needed
-                strncpy(screen_configs[s].icon_paths[g], iconValue.c_str(), 127);
-                screen_configs[s].icon_paths[g][127] = '\0';
-                // Save icon position (does not require reboot)
-                String ipKey = "iconpos_" + String(s) + "_" + String(g);
-                if (config_server.hasArg(ipKey)) {
-                    int ipos = config_server.arg(ipKey).toInt();
-                    if (ipos < 0) ipos = 0; if (ipos > 3) ipos = 3;
-                    screen_configs[s].icon_pos[g] = (uint8_t)ipos;
-                }
-                // Save per-screen background (only once per screen - do this in the g==0 block)
-                if (g == 0) {
-                    String bgKey = "bg_" + String(s);
-                    if (config_server.hasArg(bgKey)) {
-                        String bgValue = config_server.arg(bgKey);
-                        bgValue.replace("S://", "S:/");
-                        while (bgValue.indexOf("//") != -1) bgValue.replace("//", "/");
-                        if (strncmp(screen_configs[s].background_path, bgValue.c_str(), 127) != 0) {
-                            reboot_needed = true;
-                        }
-                        strncpy(screen_configs[s].background_path, bgValue.c_str(), 127);
-                        screen_configs[s].background_path[127] = '\0';
-                    }
-                }
-                // Save show_bottom setting (only once per screen, handled in g==0 path so it's read here too)
-                if (g == 0) {
-                    String sbKey = "showbottom_" + String(s);
-                    uint8_t new_sb = config_server.hasArg(sbKey) ? 1 : 0;
-                    // Do not force reboot on show_bottom changes; handle via hot-apply below.
-                    screen_configs[s].show_bottom = new_sb;
-                }
-                for (int i = 1; i <= 4; ++i) {
-                    String minKey = "mnv" + String(s) + String(g) + String(i);
-                    String maxKey = "mxv" + String(s) + String(g) + String(i);
-                    String colorKey = "clr" + String(s) + String(g) + String(i);
-                    String transKey = "trn" + String(s) + String(g) + String(i);
-                    screen_configs[s].min[g][i] = config_server.arg(minKey).toFloat();
-                    screen_configs[s].max[g][i] = config_server.arg(maxKey).toFloat();
-                    strncpy(screen_configs[s].color[g][i], config_server.arg(colorKey).c_str(), 7);
-                    screen_configs[s].color[g][i][7] = '\0';
-                    screen_configs[s].transparent[g][i] = config_server.hasArg(transKey) ? 1 : 0;
-                    String buzKey = "bzr" + String(s) + String(g) + String(i);
-                    screen_configs[s].buzzer[g][i] = config_server.hasArg(buzKey) ? 1 : 0;
-                }
-                for (int p = 0; p < 5; ++p) {
-                    String angleKey = "angle_" + String(s) + "_" + String(g) + "_" + String(p);
-                    String valueKey = "value_" + String(s) + "_" + String(g) + "_" + String(p);
-                    gauge_cal[s][g][p].angle = config_server.arg(angleKey).toInt();
-                    gauge_cal[s][g][p].value = config_server.arg(valueKey).toFloat();
-                }
-            }
-        }
-        // Attempt to write per-screen binary configs to SD immediately so toggles
-        // (like show_bottom) persist even if NVS writes fail or are delayed.
-        if (!SD_MMC.exists("/config")) SD_MMC.mkdir("/config");
-        for (int s2 = 0; s2 < NUM_SCREENS; ++s2) {
-            char sdpath[64];
-            snprintf(sdpath, sizeof(sdpath), "/config/screen%d.bin", s2);
-            File sf = SD_MMC.open(sdpath, FILE_WRITE);
-            if (sf) {
-                size_t wrote = sf.write((const uint8_t *)&screen_configs[s2], sizeof(ScreenConfig));
-                sf.close();
-                Serial.printf("[SD SAVE] Immediate wrote '%s' -> %u bytes\n", sdpath, (unsigned)wrote);
-            } else {
-                Serial.printf("[SD SAVE] Immediate failed to open '%s' for writing\n", sdpath);
-            }
-        }
+// Per-screen AJAX fragment — returns HTML for one screen's config
+void handle_gauges_screen() {
+    int s = config_server.arg("s").toInt();
+    if (s < 0 || s >= NUM_SCREENS) s = 0;
 
-        // Persist to NVS/Preferences as well
-        save_preferences();
-
-        // Refresh Signal K subscriptions immediately in case any SK paths changed
-        // (safe to call even if WS not connected; function will no-op locally)
-        refresh_signalk_subscriptions();
-
-        // Prefer hot-apply: try to apply visuals now. If successful, skip reloading
-        // stored preferences when rendering the gauges page so the user sees the
-        // updated state immediately.
-        bool applied_now = apply_all_screen_visuals();
-        if (applied_now) {
-            skip_next_load_preferences = true;
-        } else {
-            Serial.println("[HOTAPPLY] apply_all_screen_visuals() returned false — UI objects may not be present yet");
-            // still set skip flag so the page reflects in-memory state; we will not reboot
-            skip_next_load_preferences = true;
-        }
-        // Try to apply visual changes at runtime (hot-update). If LVGL objects are not present
-        // or the update fails, fall back to reboot to ensure a clean load.
-        if (reboot_needed) {
-            bool applied = false;
-            // attempt hot-apply
-            applied = apply_all_screen_visuals();
-            if (applied) {
-                // Immediately reload the Gauge Calibration page instead of showing an intermediate page
-                {
-                    String redirectPath = "/gauges";
-                    if (config_server.hasArg("active_tab")) {
-                        String at = config_server.arg("active_tab");
-                        at.trim();
-                        if (at.length() > 0) redirectPath += "#tab" + at;
-                    }
-                    config_server.sendHeader("Location", redirectPath, true);
-                    config_server.send(302, "text/plain", "");
-                    return;
-                }
-            } else {
-                String html = "<html><head>";
-                html += STYLE;
-                html += "<title>Rebooting</title></head><body><div class='container'>";
-                html += "<h3>Applying changes requires reboot. Rebooting...</h3>";
-                html += "</div></body></html>";
-                config_server.send(200, "text/html", html);
-                delay(250);
-                ESP.restart();
-                return;
-            }
-        } else {
-            // Attempt to apply visual changes at runtime (positions, recolor etc.) even when no reboot needed
-            bool applied_now = apply_all_screen_visuals();
-            // Redirect back to the gauges page (no reboot), preserving active tab
-            {
-                String redirectPath = "/gauges";
-                if (config_server.hasArg("active_tab")) {
-                    String at = config_server.arg("active_tab");
-                    at.trim();
-                    if (at.length() > 0) redirectPath += "#tab" + at;
-                }
-                config_server.sendHeader("Location", redirectPath, true);
-                config_server.send(302, "text/plain", "");
-                return;
-            }
-        }
+    // Reload config from storage so we display current values
+    if (!skip_next_load_preferences) {
+        load_preferences();
     } else {
-        config_server.send(405, "text/plain", "Method Not Allowed");
+        skip_next_load_preferences = false;
     }
+
+    config_server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    config_server.send(200, "text/html; charset=utf-8", "");
+
+    String& html = g_http_html_buf;
+    if (!g_http_html_buf_reserved) {
+        html.reserve(4096);
+        g_http_html_buf_reserved = true;
+    }
+    html.clear();
+    extern void Lvgl_Loop(void);
+    auto flushHtml = [&]() {
+        if (html.length() > 0) {
+            config_server.sendContent(html);
+            html.clear();
+            Lvgl_Loop();
+            vTaskDelay(1);
+        }
+    };
+
+    extern bool test_mode;
+
+    html += "<h3>Screen " + String(s+1) + "</h3>";
+
+    // Display Type selection
+    int curDt = screen_configs[s].display_type;
+    html += "<div style='margin-bottom:8px;'><label>Display Type: <select name='dtype_" + String(s) + "' onchange='toggleGaugeConfig(" + String(s) + ")'>";
+    html += "<option value='0'"; if (curDt == 0) html += " selected"; html += ">Gauge</option>";
+    html += "<option value='4'"; if (curDt == 4) html += " selected"; html += ">Gauge + Number</option>";
+    html += "</select></label></div>";
+
+    // Gauge+Number config section
+    html += "<div id='gnumcfg_" + String(s) + "' style='display:" + (curDt == 4 ? "block" : "none") + "; border:1px solid #ccc; padding:8px; margin-bottom:8px; border-radius:4px;'>";
+    html += "<b>Center Number Config</b>";
+    html += "<div style='margin-bottom:8px;'><label>SignalK Path: <input name='gnum_path_" + String(s) + "' type='text' value='" + String(screen_configs[s].gauge_num_center_path) + "' style='width:80%'></label></div>";
+    int curFs = screen_configs[s].gauge_num_center_font_size;
+    html += "<div style='margin-bottom:8px;'><label>Font Size: <select name='gnum_font_" + String(s) + "'>";
+    struct { int v; const char* n; } fsopts[] = {{0,"48pt"},{1,"72pt"},{2,"96pt"},{3,"120pt"},{4,"144pt"}};
+    for (int fo = 0; fo < 5; ++fo) {
+        html += "<option value='" + String(fsopts[fo].v) + "'";
+        if (curFs == fsopts[fo].v) html += " selected";
+        html += ">" + String(fsopts[fo].n) + "</option>";
+    }
+    html += "</select></label></div>";
+    html += "<div style='margin-bottom:8px;'><label>Font Color: <input name='gnum_color_" + String(s) + "' type='color' value='" + String(screen_configs[s].gauge_num_center_font_color) + "'></label></div>";
+    html += "</div>";
+
+    // Background selection
+    String savedBg = String(screen_configs[s].background_path);
+    String savedBgNorm = savedBg;
+    savedBgNorm.toLowerCase();
+    savedBgNorm.replace("S://", "S:/");
+    while (savedBgNorm.indexOf("//") != -1) savedBgNorm.replace("//", "/");
+    html += "<div style='margin-bottom:8px;'><label>Background: <select name='bg_" + String(s) + "'>";
+    html += "<option value=''";
+    if (savedBg.length() == 0) html += " selected='selected'";
+    html += ">Default</option>";
+    for (const auto& b : g_bgFiles) {
+        String bNorm = b;
+        bNorm.toLowerCase();
+        bNorm.replace("S://", "S:/");
+        while (bNorm.indexOf("//") != -1) bNorm.replace("//", "/");
+        html += "<option value='" + b + "'";
+        if (bNorm == savedBgNorm && savedBg.length() > 0) html += " selected='selected'";
+        html += ">" + b + "</option>";
+    }
+    html += "</select></label></div>";
+    flushHtml();
+
+    for (int g = 0; g < 2; ++g) {
+        // Show Bottom Gauge checkbox (only once per screen)
+        if (g == 0) {
+            html += "<div style='margin-bottom:8px;'><label>Show Bottom Gauge: <input type='checkbox' name='showbottom_" + String(s) + "'";
+            if (screen_configs[s].show_bottom) html += " checked";
+            html += "></label></div>";
+        }
+        int idx = s * 2 + g;
+        // skip rendering bottom gauge config if disabled
+        if (g == 1 && !screen_configs[s].show_bottom) {
+            html += "<div style='margin-bottom:8px;'><em>Bottom gauge disabled for this screen.</em></div>";
+            continue;
+        }
+        html += "<b>" + String(g == 0 ? "Top Gauge" : "Bottom Gauge") + "</b>";
+        // SignalK Path
+        html += "<div style='margin-bottom:8px;'><label>SignalK Path: <input name='skpath_" + String(s) + "_" + String(g) + "' type='text' value='" + signalk_paths[idx] + "' style='width:80%'></label></div>";
+
+        // Calibration points table
+        html += "<table class='table'><tr><th>Point</th><th>Angle</th><th>Value</th><th>Test</th></tr>";
+        for (int p = 0; p < 5; ++p) {
+            html += "<tr><td>" + String(p+1) + "</td>";
+            html += "<td><input name='angle_" + String(s) + "_" + String(g) + "_" + String(p) + "' type='number' value='" + String(gauge_cal[s][g][p].angle) + "'></td>";
+            html += "<td><input name='value_" + String(s) + "_" + String(g) + "_" + String(p) + "' type='number' step='any' value='" + String(gauge_cal[s][g][p].value) + "'></td>";
+            html += "<td><button type='button' onclick='testGaugePoint(" + String(s) + "," + String(g) + "," + String(p) + ")'";
+            if (!test_mode) html += " disabled";
+            html += ">Test</button></td></tr>";
+        }
+        html += "</table>";
+
+        // Icon controls
+        String savedIcon = String(screen_configs[s].icon_paths[g]);
+        String savedIconNorm = savedIcon;
+        savedIconNorm.toLowerCase();
+        savedIconNorm.replace("S://", "S:/");
+        while (savedIconNorm.indexOf("//") != -1) savedIconNorm.replace("//", "/");
+        html += "<div class='icon-section'><div class='icon-row'>";
+        html += "<div style='margin-bottom:8px;'><label>Icon: <select name='icon_" + String(s) + "_" + String(g) + "'>";
+        html += "<option value=''";
+        if (savedIcon.length() == 0) html += " selected='selected'";
+        html += ">None</option>";
+        for (const auto& icon : g_iconFiles) {
+            String iconNorm = icon;
+            iconNorm.toLowerCase();
+            iconNorm.replace("S://", "S:/");
+            while (iconNorm.indexOf("//") != -1) iconNorm.replace("//", "/");
+            html += "<option value='" + icon + "'";
+            if (iconNorm == savedIconNorm && savedIcon.length() > 0) html += " selected='selected'";
+            html += ">" + icon + "</option>";
+        }
+        html += "</select></label></div>";
+        // Icon position selector
+        int curPos = screen_configs[s].icon_pos[g];
+        html += "<div style='margin-bottom:8px;'><label>Icon Position: <select name='iconpos_" + String(s) + "_" + String(g) + "'>";
+        struct { int v; const char *n; } posopts[] = { {0,"Top"}, {1,"Right"}, {2,"Bottom"}, {3,"Left"} };
+        for (int _po = 0; _po < 4; ++_po) {
+            html += "<option value='" + String(posopts[_po].v) + "'";
+            if (curPos == posopts[_po].v) html += " selected='selected'";
+            html += ">" + String(posopts[_po].n) + "</option>";
+        }
+        html += "</select></label></div>";
+        html += "</div>"; // close icon-row
+
+        // Zone min/max/color/transparent/buzzer controls
+        html += "<div class='zone-row'>";
+        for (int i = 1; i <= 4; ++i) {
+            float minVal = screen_configs[s].min[g][i];
+            float maxVal = screen_configs[s].max[g][i];
+            String colorVal = String(screen_configs[s].color[g][i]);
+            bool transVal = screen_configs[s].transparent[g][i] != 0;
+            bool bzrVal = screen_configs[s].buzzer[g][i] != 0;
+            html += "<div class='zone-item'><label>Min " + String(i) + ": <input name='mnv" + String(s) + String(g) + String(i) + "' type='number' step='any' value='" + String(minVal) + "' style='width:100px'></label></div>";
+            html += "<div class='zone-item'><label>Max " + String(i) + ": <input name='mxv" + String(s) + String(g) + String(i) + "' type='number' step='any' value='" + String(maxVal) + "' style='width:100px'></label></div>";
+            html += "<div class='zone-item'><label>Color: <input class='color-input' name='clr" + String(s) + String(g) + String(i) + "' type='color' value='" + colorVal + "'></label></div>";
+            html += "<div class='zone-item small'><label>Transparent <input name='trn" + String(s) + String(g) + String(i) + "' type='checkbox'";
+            if (transVal) html += " checked";
+            html += "></label></div>";
+            html += "<div class='zone-item small'><label>Buzzer <input name='bzr" + String(s) + String(g) + String(i) + "' type='checkbox'";
+            if (bzrVal) html += " checked";
+            html += "></label></div>";
+        }
+        html += "</div>";
+
+        html += "</div>"; // close icon-section
+        flushHtml(); // flush after each gauge to keep heap usage bounded
+    }
+    flushHtml();
+    config_server.sendContent(""); // close chunked transfer
+
+    // Switch the physical display to this screen
+    ui_set_screen(s + 1);
+}
+
+void handle_save_gauges() {
+    if (config_server.method() != HTTP_POST) {
+        config_server.send(405, "text/plain", "Method Not Allowed");
+        return;
+    }
+
+    // Support saving a single screen (AJAX) or all screens (legacy)
+    int s_start = 0, s_end = NUM_SCREENS;
+    if (config_server.hasArg("save_screen")) {
+        int save_only = config_server.arg("save_screen").toInt();
+        if (save_only >= 0 && save_only < NUM_SCREENS) {
+            s_start = save_only;
+            s_end = save_only + 1;
+        }
+    }
+
+    for (int s = s_start; s < s_end; ++s) {
+        for (int g = 0; g < 2; ++g) {
+            int idx = s * 2 + g;
+            // Save SignalK path
+            String skpathKey = "skpath_" + String(s) + "_" + String(g);
+            if (config_server.hasArg(skpathKey)) {
+                signalk_paths[idx] = config_server.arg(skpathKey);
+            }
+            // Save icon selection
+            String iconKey = "icon_" + String(s) + "_" + String(g);
+            String iconValue = config_server.arg(iconKey);
+            iconValue.replace("S://", "S:/");
+            while (iconValue.indexOf("//") != -1) iconValue.replace("//", "/");
+            strncpy(screen_configs[s].icon_paths[g], iconValue.c_str(), 127);
+            screen_configs[s].icon_paths[g][127] = '\0';
+            // Save icon position
+            String ipKey = "iconpos_" + String(s) + "_" + String(g);
+            if (config_server.hasArg(ipKey)) {
+                int ipos = config_server.arg(ipKey).toInt();
+                if (ipos < 0) ipos = 0; if (ipos > 3) ipos = 3;
+                screen_configs[s].icon_pos[g] = (uint8_t)ipos;
+            }
+            if (g == 0) {
+                // Save per-screen background
+                String bgKey = "bg_" + String(s);
+                if (config_server.hasArg(bgKey)) {
+                    String bgValue = config_server.arg(bgKey);
+                    bgValue.replace("S://", "S:/");
+                    while (bgValue.indexOf("//") != -1) bgValue.replace("//", "/");
+                    strncpy(screen_configs[s].background_path, bgValue.c_str(), 127);
+                    screen_configs[s].background_path[127] = '\0';
+                }
+                // Save show_bottom setting
+                String sbKey = "showbottom_" + String(s);
+                screen_configs[s].show_bottom = config_server.hasArg(sbKey) ? 1 : 0;
+
+                // Save display type
+                String dtKey = "dtype_" + String(s);
+                if (config_server.hasArg(dtKey)) {
+                    screen_configs[s].display_type = (uint8_t)config_server.arg(dtKey).toInt();
+                }
+                // Save Gauge+Number center config
+                String gnPathKey = "gnum_path_" + String(s);
+                if (config_server.hasArg(gnPathKey)) {
+                    strncpy(screen_configs[s].gauge_num_center_path, config_server.arg(gnPathKey).c_str(), 127);
+                    screen_configs[s].gauge_num_center_path[127] = '\0';
+                }
+                String gnFontKey = "gnum_font_" + String(s);
+                if (config_server.hasArg(gnFontKey)) {
+                    screen_configs[s].gauge_num_center_font_size = (uint8_t)config_server.arg(gnFontKey).toInt();
+                }
+                String gnColorKey = "gnum_color_" + String(s);
+                if (config_server.hasArg(gnColorKey)) {
+                    strncpy(screen_configs[s].gauge_num_center_font_color, config_server.arg(gnColorKey).c_str(), 7);
+                    screen_configs[s].gauge_num_center_font_color[7] = '\0';
+                }
+            }
+            for (int i = 1; i <= 4; ++i) {
+                String minKey = "mnv" + String(s) + String(g) + String(i);
+                String maxKey = "mxv" + String(s) + String(g) + String(i);
+                String colorKey = "clr" + String(s) + String(g) + String(i);
+                String transKey = "trn" + String(s) + String(g) + String(i);
+                screen_configs[s].min[g][i] = config_server.arg(minKey).toFloat();
+                screen_configs[s].max[g][i] = config_server.arg(maxKey).toFloat();
+                strncpy(screen_configs[s].color[g][i], config_server.arg(colorKey).c_str(), 7);
+                screen_configs[s].color[g][i][7] = '\0';
+                screen_configs[s].transparent[g][i] = config_server.hasArg(transKey) ? 1 : 0;
+                String buzKey = "bzr" + String(s) + String(g) + String(i);
+                screen_configs[s].buzzer[g][i] = config_server.hasArg(buzKey) ? 1 : 0;
+            }
+            for (int p = 0; p < 5; ++p) {
+                String angleKey = "angle_" + String(s) + "_" + String(g) + "_" + String(p);
+                String valueKey = "value_" + String(s) + "_" + String(g) + "_" + String(p);
+                gauge_cal[s][g][p].angle = config_server.arg(angleKey).toInt();
+                gauge_cal[s][g][p].value = config_server.arg(valueKey).toFloat();
+            }
+        }
+    }
+
+    // Write per-screen binary configs to SD
+    if (!SD_MMC.exists("/config")) SD_MMC.mkdir("/config");
+    for (int s2 = s_start; s2 < s_end; ++s2) {
+        char sdpath[64];
+        snprintf(sdpath, sizeof(sdpath), "/config/screen%d.bin", s2);
+        File sf = SD_MMC.open(sdpath, FILE_WRITE);
+        if (sf) {
+            sf.write((const uint8_t *)&screen_configs[s2], sizeof(ScreenConfig));
+            sf.close();
+        }
+    }
+
+    // Persist to NVS/Preferences
+    save_preferences();
+
+    // Refresh Signal K subscriptions
+    refresh_signalk_subscriptions();
+
+    // Hot-apply visuals
+    apply_all_screen_visuals();
+    skip_next_load_preferences = true;
+
+    // Return JSON for AJAX caller
+    config_server.sendHeader("Connection", "close");
+    config_server.send(200, "application/json", "{\"ok\":true}");
 }
 
 void handle_root() {
@@ -1344,9 +1442,13 @@ void setup_network() {
     // Show fallback error screen if needed (after config load, before UI init)
     show_fallback_error_screen_if_needed();
 
+    // Cache SD asset lists for AJAX page generation
+    scan_sd_assets();
+
     // Register web UI routes and start server
     config_server.on("/", handle_root);
     config_server.on("/gauges", handle_gauges_page);
+    config_server.on("/gauges/screen", handle_gauges_screen);
     config_server.on("/save-gauges", HTTP_POST, handle_save_gauges);
     config_server.on("/needles", handle_needles_page);
     config_server.on("/save-needles", HTTP_POST, handle_save_needles);
@@ -1522,6 +1624,7 @@ void handle_assets_upload() {
 
 // Final POST handler after upload completes (redirect back)
 void handle_assets_upload_post() {
+    scan_sd_assets(); // refresh cached asset lists after upload
     String html = "<!DOCTYPE html><html><head>";
     html += STYLE;
     html += "<title>Upload Complete</title></head><body><div class='container'>";
@@ -1544,6 +1647,7 @@ void handle_assets_delete() {
         bool ok = SD_MMC.remove(path);
         Serial.printf("[ASSETS] Delete %s -> %d\n", path.c_str(), ok);
     }
+    scan_sd_assets(); // refresh cached asset lists after delete
     // redirect back
     config_server.sendHeader("Location", "/assets");
     config_server.send(303, "text/plain", "");
