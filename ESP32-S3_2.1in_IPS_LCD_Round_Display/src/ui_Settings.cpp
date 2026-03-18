@@ -5,6 +5,7 @@
 #include <WiFi.h>
 
 #include "network_setup.h"
+
 #include <Preferences.h>
 
 extern lv_obj_t *ui_Screen1;  // Reference to main screen
@@ -23,6 +24,7 @@ lv_obj_t *ui_AutoScrollDrop = NULL;
 lv_obj_t *ui_AutoScrollLabel = NULL;
 lv_obj_t *ui_BuzzerCooldownDrop = NULL;
 lv_obj_t *ui_BuzzerCooldownLabel = NULL;
+
 
 // Timer to periodically sync settings with values (in case web page changes them)
 static lv_timer_t *settings_refresh_timer = NULL;
@@ -221,6 +223,7 @@ extern "C" void update_settings_values(void)
             lv_label_set_text_fmt(ui_BrightnessLabel, "Night: %d%%", (int)LCD_Backlight);
         }
     }
+
 }
 
 // Event handler for back button (swipe up)
@@ -479,7 +482,7 @@ extern "C" void ui_Settings_screen_init(void)
     lv_label_set_text(ui_AutoScrollLabel, "Auto-scroll:");
     lv_obj_set_style_text_color(ui_AutoScrollLabel, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_x(ui_AutoScrollLabel, -80);
-    lv_obj_set_y(ui_AutoScrollLabel, 120);
+    lv_obj_set_y(ui_AutoScrollLabel, 110);
     lv_obj_set_align(ui_AutoScrollLabel, LV_ALIGN_CENTER);
 
     ui_AutoScrollDrop = lv_dropdown_create(ui_SettingsPanel);
@@ -487,15 +490,15 @@ extern "C" void ui_Settings_screen_init(void)
     lv_obj_set_width(ui_AutoScrollDrop, 140);
     lv_obj_set_height(ui_AutoScrollDrop, 32);
     lv_obj_set_x(ui_AutoScrollDrop, 40);
-    lv_obj_set_y(ui_AutoScrollDrop, 120);
+    lv_obj_set_y(ui_AutoScrollDrop, 110);
     lv_obj_set_align(ui_AutoScrollDrop, LV_ALIGN_CENTER);
 
-    // Instruction text (moved below auto-scroll)
+    // Instruction text
     lv_obj_t *instruction = lv_label_create(ui_SettingsPanel);
     lv_label_set_text(instruction, "Swipe up to return");
     lv_obj_set_style_text_color(instruction, lv_color_hex(0x808080), 0);
     lv_obj_set_x(instruction, 0);
-    lv_obj_set_y(instruction, 170);
+    lv_obj_set_y(instruction, 150);
     lv_obj_set_align(instruction, LV_ALIGN_CENTER);
 
     // Set current selection from persisted value

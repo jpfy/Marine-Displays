@@ -24,6 +24,7 @@ bool test_mode = false;
 #include "position_display.h"
 #include "compass_display.h"
 #include "ais_display.h"
+#include "unit_convert.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -244,26 +245,8 @@ extern "C" void force_update_number_display(int screen_num) {
     String unit_str = get_sensor_unit_by_path(number_path);
     String description = get_sensor_description_by_path(number_path);
     
-    // Convert common SignalK units to display units
-    if (unit_str == "K") {
-        if (!isnan(display_value)) display_value -= 273.15f;
-        unit_str = "°C";
-    } else if (unit_str == "Pa") {
-        if (!isnan(display_value)) display_value /= 100000.0f;
-        unit_str = "bar";
-    } else if (unit_str == "ratio") {
-        if (!isnan(display_value)) display_value *= 100.0f;
-        unit_str = "%";
-    } else if (unit_str == "Hz") {
-        if (!isnan(display_value)) display_value *= 60.0f;
-        unit_str = "RPM";
-    } else if (unit_str == "m/s") {
-        if (!isnan(display_value)) display_value *= 1.94384f;
-        unit_str = "kn";
-    } else if (unit_str == "rad") {
-        if (!isnan(display_value)) display_value *= 57.2958f;
-        unit_str = "°";
-    }
+    // Convert SI units to display units based on unit system preference
+    display_value = convert_unit(display_value, unit_str, number_path, unit_str);
     
     // Force update regardless of change detection
     if (!isnan(display_value)) {
@@ -317,70 +300,14 @@ static void update_number_display_for_screen(int screen_num) {
         unit_str = get_sensor_unit(sensor_idx);
         description = get_sensor_description(sensor_idx);
         
-        // Convert common SignalK units to display units
-        if (unit_str == "K") {
-            // Kelvin to Celsius
-            if (!isnan(display_value)) {
-                display_value -= 273.15f;
-            }
-            unit_str = "°C";
-        } else if (unit_str == "Pa") {
-            // Pascal to bar
-            if (!isnan(display_value)) {
-                display_value /= 100000.0f;
-            }
-            unit_str = "bar";
-        } else if (unit_str == "ratio") {
-            // Ratio (0-1) to percentage
-            if (!isnan(display_value)) {
-                display_value *= 100.0f;
-            }
-            unit_str = "%";
-        } else if (unit_str == "Hz") {
-            // Hertz to RPM (Hz * 60)
-            if (!isnan(display_value)) {
-                display_value *= 60.0f;
-            }
-            unit_str = "RPM";
-        } else if (unit_str == "m/s") {
-            // Meters/sec to knots
-            if (!isnan(display_value)) {
-                display_value *= 1.94384f;
-            }
-            unit_str = "kn";
-        } else if (unit_str == "rad") {
-            // Radians to degrees
-            if (!isnan(display_value)) {
-                display_value *= 57.2958f;
-            }
-            unit_str = "°";
-        }
-        // else keep unit as-is (V, A, rpm, etc.)
+        // Convert SI units to display units based on unit system preference
+        display_value = convert_unit(display_value, unit_str, number_path, unit_str);
     } else {
         // Path is not a gauge path — look it up via extended sensor maps
         display_value = get_sensor_value_by_path(number_path);
         unit_str = get_sensor_unit_by_path(number_path);
         description = get_sensor_description_by_path(number_path);
-        // Apply unit conversions (same as gauge path branch above)
-        if (unit_str == "K") {
-            if (!isnan(display_value)) display_value -= 273.15f;
-            unit_str = "°C";
-        } else if (unit_str == "Pa") {
-            if (!isnan(display_value)) display_value /= 100000.0f;
-            unit_str = "bar";
-        } else if (unit_str == "ratio") {
-            if (!isnan(display_value)) display_value *= 100.0f;
-            unit_str = "%";
-        } else if (unit_str == "Hz") {
-            if (!isnan(display_value)) display_value *= 60.0f;
-            unit_str = "RPM";
-        } else if (unit_str == "m/s") {
-            if (!isnan(display_value)) display_value *= 1.94384f;
-            unit_str = "kn";
-        } else if (unit_str == "rad") {
-            if (!isnan(display_value)) display_value *= 57.2958f;
-            unit_str = "°";
-        }
+        display_value = convert_unit(display_value, unit_str, number_path, unit_str);
     }
     
     // Create number display if it doesn't exist (note: may also be created externally via ui_hotupdate)
@@ -477,26 +404,7 @@ static void update_dual_number_display_for_screen(int screen_num) {
             return false;
         }
         
-        // Convert common SignalK units to display units
-        if (unit == "K") {
-            if (!isnan(value)) value -= 273.15f;
-            unit = "°C";
-        } else if (unit == "Pa") {
-            if (!isnan(value)) value /= 100000.0f;
-            unit = "bar";
-        } else if (unit == "ratio") {
-            if (!isnan(value)) value *= 100.0f;
-            unit = "%";
-        } else if (unit == "Hz") {
-            if (!isnan(value)) value *= 60.0f;
-            unit = "RPM";
-        } else if (unit == "m/s") {
-            if (!isnan(value)) value *= 1.94384f;
-            unit = "kn";
-        } else if (unit == "rad") {
-            if (!isnan(value)) value *= 57.2958f;
-            unit = "°";
-        }
+        value = convert_unit(value, unit, path, unit);
         return true;
     };
     
@@ -589,27 +497,7 @@ static void update_quad_number_display_for_screen(int screen_num) {
             return false;
         }
         
-        // Convert common SignalK units to display units
-        if (unit == "K") {
-            if (!isnan(value)) value -= 273.15f;
-            unit = "°C";
-        } else if (unit == "Pa") {
-            if (!isnan(value)) value /= 100000.0f;
-            unit = "bar";
-        } else if (unit == "ratio") {
-            if (!isnan(value)) value *= 100.0f;
-            unit = "%";
-        } else if (unit == "Hz") {
-            if (!isnan(value)) value *= 60.0f;
-            unit = "RPM";
-        } else if (unit == "m/s") {
-            if (!isnan(value)) value *= 1.94384f;
-            unit = "kn";
-        } else if (unit == "rad") {
-            if (!isnan(value)) value *= 57.2958f;
-            unit = "°";
-        }
-        
+        value = convert_unit(value, unit, path, unit);
         return true;
     };
     
@@ -694,27 +582,7 @@ static void update_gauge_number_display_for_screen(int screen_num) {
             return false;
         }
         
-        // Convert common SignalK units to display units
-        if (unit == "K") {
-            if (!isnan(value)) value -= 273.15f;
-            unit = "°C";
-        } else if (unit == "Pa") {
-            if (!isnan(value)) value /= 100000.0f;
-            unit = "bar";
-        } else if (unit == "ratio") {
-            if (!isnan(value)) value *= 100.0f;
-            unit = "%";
-        } else if (unit == "Hz") {
-            if (!isnan(value)) value *= 60.0f;
-            unit = "RPM";
-        } else if (unit == "m/s") {
-            if (!isnan(value)) value *= 1.94384f;
-            unit = "kn";
-        } else if (unit == "rad") {
-            if (!isnan(value)) value *= 57.2958f;
-            unit = "°";
-        }
-        
+        value = convert_unit(value, unit, path, unit);
         return true;
     };
     
@@ -784,27 +652,7 @@ static void update_graph_display_for_screen(int screen_num) {
             return false;
         }
         
-        // Convert common SignalK units to display units
-        if (unit == "K") {
-            if (!isnan(value)) value -= 273.15f;
-            unit = "°C";
-        } else if (unit == "Pa") {
-            if (!isnan(value)) value /= 100000.0f;
-            unit = "bar";
-        } else if (unit == "ratio") {
-            if (!isnan(value)) value *= 100.0f;
-            unit = "%";
-        } else if (unit == "Hz") {
-            if (!isnan(value)) value *= 60.0f;
-            unit = "RPM";
-        } else if (unit == "m/s") {
-            if (!isnan(value)) value *= 1.94384f;
-            unit = "kn";
-        } else if (unit == "rad") {
-            if (!isnan(value)) value *= 57.2958f;
-            unit = "°";
-        }
-        
+        value = convert_unit(value, unit, path, unit);
         return true;
     };
     
@@ -871,7 +719,7 @@ extern "C" void update_needles_for_screen(int screen_num) {
         if (hdg_path.length() == 0) hdg_path = "navigation.headingMagnetic";
         float hdg_rad = get_sensor_value_by_path(hdg_path);
         if (!isnan(hdg_rad)) {
-            float hdg_deg = hdg_rad * (180.0f / (float)M_PI);
+            float hdg_deg = convert_angle_rad(hdg_rad);
             bool is_true = (hdg_path.indexOf("True") >= 0 || hdg_path.indexOf("true") >= 0);
             compass_display_update(screen_idx, hdg_deg, is_true ? 1 : 0);
         }
@@ -881,14 +729,7 @@ extern "C" void update_needles_for_screen(int screen_num) {
             val  = get_sensor_value_by_path(path);
             unit = get_sensor_unit_by_path(path);
             desc = get_sensor_description_by_path(path);
-            if (!isnan(val)) {
-                if (unit == "K")     { val -= 273.15f;  unit = "°C"; }
-                else if (unit == "Pa")     { val /= 100000.0f; unit = "bar"; }
-                else if (unit == "ratio")  { val *= 100.0f;    unit = "%"; }
-                else if (unit == "Hz")     { val *= 60.0f;     unit = "RPM"; }
-                else if (unit == "m/s")    { val *= 1.94384f;  unit = "kn"; }
-                else if (unit == "rad")    { val *= 57.2958f;  unit = "°"; }
-            }
+            val = convert_unit(val, unit, path, unit);
         };
         String bl_path = String(screen_configs[screen_idx].quad_bl_path);
         String br_path = String(screen_configs[screen_idx].quad_br_path);
@@ -906,8 +747,8 @@ extern "C" void update_needles_for_screen(int screen_num) {
         // Own-boat nav data: COG/SOG from Signal K (radians/m→s → degrees/knots)
         float own_cog_rad = get_sensor_value_by_path("navigation.courseOverGroundTrue");
         float own_sog_ms  = get_sensor_value_by_path("navigation.speedOverGround");
-        float own_cog = isnan(own_cog_rad) ? NAN : own_cog_rad * (180.0f / (float)M_PI);
-        float own_sog = isnan(own_sog_ms)  ? NAN : own_sog_ms * 1.94384f;
+        float own_cog = isnan(own_cog_rad) ? NAN : convert_angle_rad(own_cog_rad);
+        float own_sog = isnan(own_sog_ms)  ? NAN : convert_speed(own_sog_ms);
         ais_display_update(screen_idx, (float)g_nav_latitude, (float)g_nav_longitude,
                            own_cog, own_sog);
         return;

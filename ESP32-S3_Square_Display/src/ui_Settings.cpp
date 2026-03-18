@@ -5,6 +5,7 @@
 #include <WiFi.h>
 
 #include "network_setup.h"
+
 #include <Preferences.h>
 
 extern lv_obj_t *ui_Screen1;  // Reference to main screen
@@ -44,6 +45,7 @@ uint8_t brightness_level = 0;
 static lv_obj_t *night_overlays[6] = {NULL}; // 0-4 = Screen1-5, 5 = Settings
 static lv_obj_t *ui_BrightnessDrop = NULL;
 static lv_obj_t *ui_BrightnessLevelLabel = NULL;
+
 
 // Buzzer alert function.
 // Circuit: PIN6 LOW -> Q1 off -> Q7 on -> buzzer ON  (active-LOW via NPN pair)
@@ -177,6 +179,8 @@ extern "C" void update_settings_values(void)
     if (ui_BrightnessDrop != NULL) {
         lv_dropdown_set_selected(ui_BrightnessDrop, brightness_level);
     }
+
+
 }
 
 // Event handler for back button (swipe up)
@@ -573,7 +577,7 @@ extern "C" void ui_Settings_screen_init(void)
     lv_label_set_text(instruction, "Swipe up to return");
     lv_obj_set_style_text_color(instruction, lv_color_hex(0x808080), 0);
     lv_obj_set_x(instruction, 0);
-    lv_obj_set_y(instruction, 180);
+    lv_obj_set_y(instruction, 170);
     lv_obj_set_align(instruction, LV_ALIGN_CENTER);
 
     // Set current selection from persisted value

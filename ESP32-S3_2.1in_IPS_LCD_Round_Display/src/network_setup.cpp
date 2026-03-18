@@ -8,6 +8,7 @@
 #include <Preferences.h>
 #include "network_setup.h"
 #include "signalk_config.h"
+#include "unit_convert.h"
 #include "gauge_config.h"
 #include "screen_config_c_api.h"
 #include "ui_Settings.h"
@@ -237,6 +238,7 @@ void save_preferences() {
         preferences.putShort("bright_pos", (int16_t)brightness_slider_pos);
         // Save auto-scroll setting
         preferences.putUShort("auto_scroll", auto_scroll_sec);
+        preferences.putUShort("unit_system", (uint16_t)unit_system);
         for (int i = 0; i < NUM_SCREENS * 2; ++i) {
             String key = String("skpath_") + i;
             preferences.putString(key.c_str(), signalk_paths[i]);
@@ -343,6 +345,7 @@ void save_preferences() {
                     preferences.putUShort("buzzer_cooldown", buzzer_cooldown_sec);
                     preferences.putShort("bright_pos", (int16_t)brightness_slider_pos);
                     preferences.putUShort("auto_scroll", auto_scroll_sec);
+                    preferences.putUShort("unit_system", (uint16_t)unit_system);
                     for (int i = 0; i < NUM_SCREENS * 2; ++i) {
                         String key = String("skpath_") + i;
                         preferences.putString(key.c_str(), signalk_paths[i]);
@@ -442,6 +445,7 @@ void load_preferences() {
         saved_hostname = preferences.getString("hostname", "");
         // Load auto-scroll interval (seconds)
         auto_scroll_sec = preferences.getUShort("auto_scroll", 0);
+        unit_system = (UnitSystem)preferences.getUShort("unit_system", (uint16_t)UNIT_NAUTICAL_METRIC);
         // Load device settings
         buzzer_mode = (int)preferences.getUShort("buzzer_mode", (uint16_t)buzzer_mode);
         buzzer_cooldown_sec = preferences.getUShort("buzzer_cooldown", buzzer_cooldown_sec);
@@ -474,20 +478,21 @@ void load_preferences() {
         }
         preferences.end();
     }
-    // If SignalK paths are empty in Preferences, try SD fallback file
-    bool any_path_set = false;
-    for (int i = 0; i < NUM_SCREENS * 2; ++i) if (signalk_paths[i].length() > 0) { any_path_set = true; break; }
-    if (!any_path_set) {
+    // Fill in any missing SignalK paths from SD fallback file (per-path, not all-or-nothing)
+    {
         const char *spfpath = "/config/signalk_paths.txt";
         if (SD_MMC.exists(spfpath)) {
             File spf = SD_MMC.open(spfpath, FILE_READ);
             if (spf) {
-                Serial.println("[SD LOAD] Loading SignalK paths from /config/signalk_paths.txt");
                 int idx = 0;
                 while (spf.available() && idx < NUM_SCREENS * 2) {
                     String line = spf.readStringUntil('\n');
                     line.trim();
-                    signalk_paths[idx++] = line;
+                    if (signalk_paths[idx].length() == 0 && line.length() > 0) {
+                        signalk_paths[idx] = line;
+                        Serial.printf("[SD LOAD] Restored signalk_paths[%d] = '%s' from SD\n", idx, line.c_str());
+                    }
+                    idx++;
                 }
                 spf.close();
             }
@@ -1280,6 +1285,15 @@ void handle_device_page() {
     html += "<option value='30'" + String(auto_scroll_sec==30?" selected":"") + ">30s</option>";
     html += "<option value='60'" + String(auto_scroll_sec==60?" selected":"") + ">60s</option>";
     html += "</select></div>";
+    // Unit system
+    html += "<div class='form-row'><label>Units:</label><select name='unit_system'>";
+    html += "<option value='0'" + String(unit_system==UNIT_METRIC?" selected":"") + ">Metric</option>";
+    html += "<option value='1'" + String(unit_system==UNIT_IMPERIAL_US?" selected":"") + ">Imperial US</option>";
+    html += "<option value='2'" + String(unit_system==UNIT_IMPERIAL_UK?" selected":"") + ">Imperial UK</option>";
+    html += "<option value='3'" + String(unit_system==UNIT_NAUTICAL_METRIC?" selected":"") + ">Nautical Metric</option>";
+    html += "<option value='4'" + String(unit_system==UNIT_NAUTICAL_IMP_US?" selected":"") + ">Nautical Imperial US</option>";
+    html += "<option value='5'" + String(unit_system==UNIT_NAUTICAL_IMP_UK?" selected":"") + ">Nautical Imperial UK</option>";
+    html += "</select></div>";
     html += "<div style='text-align:center;margin-top:12px;'><button class='tab-btn' type='submit' style='padding:10px 18px;'>Save</button></div>";
     html += "</form>";
     html += "<p style='text-align:center; margin-top:10px;'><a href='/'>Back</a></p>";
@@ -1310,6 +1324,11 @@ void handle_save_device() {
         auto_scroll_sec = asc;
         // Apply auto-scroll at runtime
         set_auto_scroll_interval(auto_scroll_sec);
+
+        // Unit system
+        uint16_t us = (uint16_t)config_server.arg("unit_system").toInt();
+        if (us > 5) us = 3;
+        unit_system = (UnitSystem)us;
 
         // Persist settings
         save_preferences();

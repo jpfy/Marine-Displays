@@ -15,6 +15,7 @@ bool test_mode = false;
 #include "gauge_config.h"
 #include "needle_style.h"
 #include "gauge_number_display.h"
+#include "unit_convert.h"
 
 // Apply saved screen visuals (backgrounds, icons, display type) after ui_init()
 extern bool apply_all_screen_visuals();
@@ -215,36 +216,7 @@ static void update_gauge_number_center(int screen_num) {
     float display_val = raw;
     String display_unit = unit;
 
-    // Temperature: K → °C
-    if (path.indexOf("temperature") >= 0 || path.indexOf("Temperature") >= 0 || unit == "K") {
-        display_val = raw - 273.15f;
-        display_unit = String("\xC2\xB0") + "C";
-    }
-    // Pressure: Pa → bar
-    else if (path.indexOf("pressure") >= 0 || unit == "Pa") {
-        display_val = raw / 100000.0f;
-        display_unit = "bar";
-    }
-    // Ratio → %
-    else if (unit == "ratio") {
-        display_val = raw * 100.0f;
-        display_unit = "%";
-    }
-    // Frequency: Hz → RPM
-    else if (path.indexOf("revolutions") >= 0 || unit == "Hz") {
-        display_val = raw * 60.0f;
-        display_unit = "RPM";
-    }
-    // Speed: m/s → knots
-    else if (path.indexOf("speed") >= 0 || unit == "m/s") {
-        display_val = raw * 1.94384f;
-        display_unit = "kn";
-    }
-    // Angle: rad → degrees
-    else if (unit == "rad") {
-        display_val = raw * 57.2958f;
-        display_unit = String("\xC2\xB0");
-    }
+    display_val = convert_unit(raw, display_unit, path, display_unit);
 
     gauge_number_display_update_center(s, display_val, display_unit.c_str(), desc.c_str());
 }

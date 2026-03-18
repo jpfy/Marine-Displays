@@ -1,6 +1,7 @@
 #include "ais_display.h"
 #include "ui.h"
 #include "screen_config_c_api.h"
+#include "unit_convert.h"
 #include <Arduino.h>
 #include <math.h>
 #include <HTTPClient.h>
@@ -471,7 +472,7 @@ void ais_fetch_targets(const char* server_ip, uint16_t server_port) {
         tgt.cog = 0;
         if (nav.containsKey("courseOverGroundTrue")) {
             JsonVariant cogv = nav["courseOverGroundTrue"];
-            tgt.cog = (cogv.containsKey("value") ? cogv["value"].as<float>() : cogv.as<float>()) * RAD_TO_DEG;
+            tgt.cog = convert_angle_rad(cogv.containsKey("value") ? cogv["value"].as<float>() : cogv.as<float>());
         }
 
         // SOG (Signal K stores m/s)
@@ -479,7 +480,7 @@ void ais_fetch_targets(const char* server_ip, uint16_t server_port) {
         if (nav.containsKey("speedOverGround")) {
             JsonVariant sogv = nav["speedOverGround"];
             float sog_ms = sogv.containsKey("value") ? sogv["value"].as<float>() : sogv.as<float>();
-            tgt.sog = sog_ms * 1.94384f;
+            tgt.sog = convert_speed(sog_ms);
         }
 
         // Vessel name
