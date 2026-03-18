@@ -31,6 +31,11 @@ static lv_timer_t *settings_refresh_timer = NULL;
 int buzzer_mode = 0;
 uint16_t buzzer_cooldown_sec = 60; // default 60s
 
+// Night mode state
+bool night_mode_active = false;
+uint8_t brightness_slider_pos = 75;  // 0-100 slider position (default ~55% hw brightness)
+static lv_obj_t *night_overlay = NULL;
+
 // Buzzer alert function - makes two beeps
 extern "C" void trigger_buzzer_alert() {
     if (buzzer_mode == 0) return; // disabled
@@ -50,24 +55,69 @@ extern "C" void trigger_buzzer_alert() {
     printf("  -> beep 2 off\n");
 }
 
+// Apply or remove the red night-mode overlay on lv_layer_top()
+void apply_night_mode_overlay(bool enable)
+{
+    if (enable) {
+        if (night_overlay == NULL) {
+            night_overlay = lv_obj_create(lv_layer_top());
+            lv_obj_remove_style_all(night_overlay);
+            lv_obj_set_size(night_overlay, 480, 480);
+            lv_obj_set_style_bg_color(night_overlay, lv_color_hex(0xFF0000), 0);
+            lv_obj_set_style_bg_opa(night_overlay, 128, 0);
+            lv_obj_clear_flag(night_overlay, LV_OBJ_FLAG_CLICKABLE);
+        }
+        lv_obj_clear_flag(night_overlay, LV_OBJ_FLAG_HIDDEN);
+        night_mode_active = true;
+    } else {
+        if (night_overlay != NULL) {
+            lv_obj_add_flag(night_overlay, LV_OBJ_FLAG_HIDDEN);
+        }
+        night_mode_active = false;
+    }
+}
+
+// Compute hardware brightness from unified slider position and apply overlay
+void apply_brightness_from_slider(uint8_t slider_pos)
+{
+    brightness_slider_pos = slider_pos;
+    uint8_t hw;
+    if (slider_pos >= 50) {
+        // Normal mode: map 50-100 → 10-100% hardware brightness
+        hw = (uint8_t)(10 + (slider_pos - 50) * 90 / 50);
+        apply_night_mode_overlay(false);
+    } else {
+        // Night mode: map 0-49 → 1-10% hardware brightness
+        hw = (uint8_t)(1 + slider_pos * 9 / 49);
+        apply_night_mode_overlay(true);
+    }
+    LCD_Backlight = hw;
+    Set_Backlight(hw);
+}
+
 // Event handler for brightness slider
 static void brightness_slider_event_cb(lv_event_t *e)
 {
     lv_obj_t *slider = lv_event_get_target(e);
     int32_t value = lv_slider_get_value(slider);
-    
-    // Update brightness
-    Set_Backlight((uint8_t)value);
-    LCD_Backlight = (uint8_t)value;
-    // Persist brightness setting
+
+    apply_brightness_from_slider((uint8_t)value);
+
+    // Update slider indicator color and label based on mode
+    if (value >= 50) {
+        lv_obj_set_style_bg_color(slider, lv_color_hex(0x00A8FF), LV_PART_INDICATOR);
+        lv_label_set_text_fmt(ui_BrightnessLabel, "Brightness: %d%%", (int)LCD_Backlight);
+    } else {
+        lv_obj_set_style_bg_color(slider, lv_color_hex(0xFF0000), LV_PART_INDICATOR);
+        lv_label_set_text_fmt(ui_BrightnessLabel, "Night: %d%%", (int)LCD_Backlight);
+    }
+
+    // Persist slider position
     Preferences p;
     if (p.begin("settings", false)) {
-        p.putUShort("brightness", (uint16_t)LCD_Backlight);
+        p.putUShort("bright_pos", (uint16_t)value);
         p.end();
     }
-    
-    // Update label
-    lv_label_set_text_fmt(ui_BrightnessLabel, "Brightness: %d%%", (int)value);
 }
 
 // Event handler for buzzer dropdown
@@ -158,6 +208,18 @@ extern "C" void update_settings_values(void)
         else if (auto_scroll_sec == 10) sel = 2;
         else if (auto_scroll_sec == 30) sel = 3;
         lv_dropdown_set_selected(ui_AutoScrollDrop, sel);
+    }
+
+    // Sync brightness slider position and mode colors
+    if (ui_BrightnessSlider != NULL) {
+        lv_slider_set_value(ui_BrightnessSlider, brightness_slider_pos, LV_ANIM_OFF);
+        if (brightness_slider_pos >= 50) {
+            lv_obj_set_style_bg_color(ui_BrightnessSlider, lv_color_hex(0x00A8FF), LV_PART_INDICATOR);
+            lv_label_set_text_fmt(ui_BrightnessLabel, "Brightness: %d%%", (int)LCD_Backlight);
+        } else {
+            lv_obj_set_style_bg_color(ui_BrightnessSlider, lv_color_hex(0xFF0000), LV_PART_INDICATOR);
+            lv_label_set_text_fmt(ui_BrightnessLabel, "Night: %d%%", (int)LCD_Backlight);
+        }
     }
 }
 
@@ -265,23 +327,28 @@ extern "C" void ui_Settings_screen_init(void)
     
     // Brightness label
     ui_BrightnessLabel = lv_label_create(ui_SettingsPanel);
-    lv_label_set_text_fmt(ui_BrightnessLabel, "Brightness: %d%%", LCD_Backlight);
+    if (brightness_slider_pos >= 50)
+        lv_label_set_text_fmt(ui_BrightnessLabel, "Brightness: %d%%", (int)LCD_Backlight);
+    else
+        lv_label_set_text_fmt(ui_BrightnessLabel, "Night: %d%%", (int)LCD_Backlight);
     lv_obj_set_style_text_color(ui_BrightnessLabel, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_x(ui_BrightnessLabel, 0);
     lv_obj_set_y(ui_BrightnessLabel, -70);
     lv_obj_set_align(ui_BrightnessLabel, LV_ALIGN_CENTER);
     
-    // Brightness slider
+    // Brightness slider (0-100: top half normal, bottom half night mode)
     ui_BrightnessSlider = lv_slider_create(ui_SettingsPanel);
-    lv_slider_set_range(ui_BrightnessSlider, 10, 100);  // Min 10% to avoid completely dark screen
-    lv_slider_set_value(ui_BrightnessSlider, LCD_Backlight, LV_ANIM_OFF);
+    lv_slider_set_range(ui_BrightnessSlider, 0, 100);
+    lv_slider_set_value(ui_BrightnessSlider, brightness_slider_pos, LV_ANIM_OFF);
     lv_obj_set_width(ui_BrightnessSlider, 300);
     lv_obj_set_height(ui_BrightnessSlider, 20);
     lv_obj_set_x(ui_BrightnessSlider, 0);
     lv_obj_set_y(ui_BrightnessSlider, -20);
     lv_obj_set_align(ui_BrightnessSlider, LV_ALIGN_CENTER);
     lv_obj_set_style_bg_color(ui_BrightnessSlider, lv_color_hex(0x404040), LV_PART_MAIN);
-    lv_obj_set_style_bg_color(ui_BrightnessSlider, lv_color_hex(0x00A8FF), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(ui_BrightnessSlider,
+        brightness_slider_pos >= 50 ? lv_color_hex(0x00A8FF) : lv_color_hex(0xFF0000),
+        LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(ui_BrightnessSlider, lv_color_hex(0xFFFFFF), LV_PART_KNOB);
     lv_obj_add_event_cb(ui_BrightnessSlider, brightness_slider_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
     

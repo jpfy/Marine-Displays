@@ -494,6 +494,11 @@ void setup() {
     Serial.println("Screen visuals applied from saved config");
     Serial.flush();
 
+    // Apply night mode overlay if slider was in night zone (LVGL now initialized)
+    if (brightness_slider_pos < 50) {
+        apply_night_mode_overlay(true);
+    }
+
     // Initialize gauge configuration
     gauge_config_init();
     Serial.println("Gauge configuration loaded");

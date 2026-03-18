@@ -10,6 +10,7 @@
 #include "signalk_config.h"
 #include "gauge_config.h"
 #include "screen_config_c_api.h"
+#include "ui_Settings.h"
 #include <FS.h>
 #include <SPIFFS.h>
 #include <SD_MMC.h>
@@ -233,7 +234,7 @@ void save_preferences() {
         // Persist device settings
         preferences.putUShort("buzzer_mode", (uint16_t)buzzer_mode);
         preferences.putUShort("buzzer_cooldown", buzzer_cooldown_sec);
-        preferences.putUShort("brightness", (uint16_t)LCD_Backlight);
+        preferences.putShort("bright_pos", (int16_t)brightness_slider_pos);
         // Save auto-scroll setting
         preferences.putUShort("auto_scroll", auto_scroll_sec);
         for (int i = 0; i < NUM_SCREENS * 2; ++i) {
@@ -331,18 +332,23 @@ void save_preferences() {
 
             // Retry writing Preferences and NVS blobs once
             if (init_res == ESP_OK) {
-                // Restore preferences (SSID/password etc)
+                // Restore ALL settings (not just WiFi — also device prefs)
                 if (preferences.begin(SETTINGS_NAMESPACE, false)) {
                     preferences.putString("ssid", saved_ssid);
                     preferences.putString("password", saved_password);
                     preferences.putString("signalk_ip", saved_signalk_ip);
                     preferences.putString("hostname", saved_hostname);
                     preferences.putUShort("signalk_port", saved_signalk_port);
+                    preferences.putUShort("buzzer_mode", (uint16_t)buzzer_mode);
+                    preferences.putUShort("buzzer_cooldown", buzzer_cooldown_sec);
+                    preferences.putShort("bright_pos", (int16_t)brightness_slider_pos);
+                    preferences.putUShort("auto_scroll", auto_scroll_sec);
                     for (int i = 0; i < NUM_SCREENS * 2; ++i) {
                         String key = String("skpath_") + i;
                         preferences.putString(key.c_str(), signalk_paths[i]);
                     }
                     preferences.end();
+                    Serial.println("[NVS REPAIR] Restored all settings to NVS");
                 }
 
                 nvs_handle_t nh2;
@@ -402,14 +408,15 @@ void save_preferences() {
             String v = preferences.getString(key.c_str(), "<missing>");
             Serial.printf("[DEBUG] prefs[%s] = '%s'\n", key.c_str(), v.c_str());
         }
+        String vs = preferences.getString("ssid", "<missing>");
+        String vp = preferences.getString("password", "<missing>");
+        Serial.printf("[DEBUG] prefs saved SSID='%s' PASSWORD='%s'\n", vs.c_str(), vp.c_str());
         preferences.end();
     } else {
         Serial.println("[DEBUG] preferences.begin(SETTINGS_NAMESPACE, true) failed for verification");
     }
-    // Also print saved SSID/password from Preferences to verify
-    if (preferences.begin(SETTINGS_NAMESPACE, true)) {
 
-    // Always write SignalK paths to SD as a fallback in case Preferences/NVS fails
+    // Always write SignalK paths to SD as a fallback — OUTSIDE any preferences block
     if (!SD_MMC.exists("/config")) SD_MMC.mkdir("/config");
     File spf = SD_MMC.open("/config/signalk_paths.txt", FILE_WRITE);
     if (spf) {
@@ -420,11 +427,6 @@ void save_preferences() {
         Serial.println("[SD SAVE] Wrote /config/signalk_paths.txt");
     } else {
         Serial.println("[SD SAVE] Failed to open /config/signalk_paths.txt for writing");
-    }
-        String vs = preferences.getString("ssid", "<missing>");
-        String vp = preferences.getString("password", "<missing>");
-        Serial.printf("[DEBUG] prefs saved SSID='%s' PASSWORD='%s'\n", vs.c_str(), vp.c_str());
-        preferences.end();
     }
 }
 
@@ -445,8 +447,23 @@ void load_preferences() {
         buzzer_cooldown_sec = preferences.getUShort("buzzer_cooldown", buzzer_cooldown_sec);
         // Mark first run so buzzer logic can re-evaluate immediately
         first_run_buzzer = true;
-        uint16_t saved_brightness = preferences.getUShort("brightness", (uint16_t)LCD_Backlight);
-        LCD_Backlight = (uint8_t)saved_brightness;
+        // Load unified slider position (0-100); migrate from old "brightness" key if needed
+        int16_t slider_pos = preferences.getShort("bright_pos", -1);
+        if (slider_pos < 0) {
+            // First boot after update: reverse-map old hw brightness → slider position
+            uint16_t old_bright = preferences.getUShort("brightness", 50);
+            if (old_bright < 10) old_bright = 10;
+            if (old_bright > 100) old_bright = 100;
+            slider_pos = 50 + ((int)old_bright - 10) * 50 / 90;
+        }
+        if (slider_pos > 100) slider_pos = 100;
+        if (slider_pos < 0) slider_pos = 0;
+        brightness_slider_pos = (uint8_t)slider_pos;
+        // Compute hw brightness from slider position (no overlay yet — LVGL not initialized)
+        if (brightness_slider_pos >= 50)
+            LCD_Backlight = (uint8_t)(10 + (brightness_slider_pos - 50) * 90 / 50);
+        else
+            LCD_Backlight = (uint8_t)(1 + brightness_slider_pos * 9 / 49);
         // Apply brightness to hardware
         extern void Set_Backlight(uint8_t Light);
         Set_Backlight(LCD_Backlight);
@@ -1238,9 +1255,9 @@ void handle_device_page() {
     html += "<div class='tab-content'>";
     html += "<h2>Device Settings</h2>";
     html += "<form method='POST' action='/save-device'>";
-    // Brightness (slider)
-    html += "<div class='form-row'><label>Brightness (10-100):</label><input id='brightness' name='brightness' type='range' min='10' max='100' value='" + String(LCD_Backlight) + "' oninput=\"document.getElementById('brightval').innerText=this.value\"></div>";
-    html += "<div class='form-row'><label>Current:</label><span id='brightval'>" + String(LCD_Backlight) + "</span></div>";
+    // Brightness slider (0-100: above 50 = normal, below 50 = night mode)
+    html += "<div class='form-row'><label>Brightness:</label><input id='brightness' name='brightness' type='range' min='0' max='100' value='" + String(brightness_slider_pos) + "' oninput=\"var v=this.value;document.getElementById('brightval').innerText=v;document.getElementById('modetext').innerText=v<50?' (Night Mode)':'';\"></div>";
+    html += "<div class='form-row'><label>Current:</label><span id='brightval'>" + String(brightness_slider_pos) + "</span><span id='modetext'>" + String(brightness_slider_pos < 50 ? " (Night Mode)" : "") + "</span></div>";
     // Buzzer mode
     html += "<div class='form-row'><label>Buzzer Mode:</label><select name='buzzer_mode'>";
     html += "<option value='0'" + String(buzzer_mode==0?" selected":"") + ">Off</option>";
@@ -1278,13 +1295,11 @@ void handle_save_device() {
         uint16_t bcd = (uint16_t)config_server.arg("buzzer_cooldown").toInt();
         uint16_t asc = (uint16_t)config_server.arg("auto_scroll").toInt();
 
-        // Clamp brightness
-        if (brightness < 10) brightness = 10;
+        // Clamp slider position
+        if (brightness < 0) brightness = 0;
         if (brightness > 100) brightness = 100;
 
-        LCD_Backlight = (uint8_t)brightness;
-        extern void Set_Backlight(uint8_t Light);
-        Set_Backlight(LCD_Backlight);
+        apply_brightness_from_slider((uint8_t)brightness);
 
         buzzer_mode = bm;
         buzzer_cooldown_sec = bcd;
