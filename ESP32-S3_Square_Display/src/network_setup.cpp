@@ -255,7 +255,8 @@ static std::vector<String> g_iconFiles;
 static std::vector<String> g_bgFiles;
 
 // Single shared HTML buffer for handle_gauges_page() and handle_gauges_screen().
-// Using one 4096-byte buffer instead of two saves 4 KB of internal RAM.
+// Reserved at 8192 to exceed CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL (4096),
+// forcing the backing store into PSRAM and freeing ~8 KB of internal RAM.
 String g_http_html_buf;
 bool   g_http_html_buf_reserved = false;
 
@@ -777,7 +778,7 @@ void handle_gauges_page() {
     extern bool   g_http_html_buf_reserved;
     String& html = g_http_html_buf;
     if (!g_http_html_buf_reserved) {
-        html.reserve(4096);
+        html.reserve(8192);  // >4096 → PSRAM via SPIRAM threshold
         g_http_html_buf_reserved = true;
     }
     html.clear();
@@ -942,6 +943,9 @@ void handle_gauges_page() {
     html += "  .catch(function(e){console.error(e);});\n";
     html += "}\n";
 
+    // Keepalive: ping every 8s so the 60s idle watchdog doesn't resume WS
+    html += "setInterval(function(){fetch('/gauges/ping').catch(function(){});},8000);\n";
+
     // Load first tab on page load
     html += "document.addEventListener('DOMContentLoaded',function(){\n";
     html += "  var initial=0;\n";
@@ -998,7 +1002,7 @@ void handle_gauges_screen() {
     extern bool   g_http_html_buf_reserved;
     String& html = g_http_html_buf;
     if (!g_http_html_buf_reserved) {
-        html.reserve(4096);
+        html.reserve(8192);  // >4096 → PSRAM via SPIRAM threshold
         g_http_html_buf_reserved = true;
     }
     html.clear();
@@ -2356,6 +2360,10 @@ void setup_network() {
     // Register web UI routes and start server
     config_server.on("/", handle_root);
     config_server.on("/gauges", handle_gauges_page);
+    config_server.on("/gauges/ping", []() {
+        g_config_page_last_seen = millis();
+        config_server.send(204);
+    });
     config_server.on("/gauges/screen", handle_gauges_screen);
     config_server.on("/save-gauges", HTTP_POST, handle_save_gauges);
     config_server.on("/needles", handle_needles_page);
@@ -2599,7 +2607,7 @@ void handle_assets_page() {
     config_server.setContentLength(CONTENT_LENGTH_UNKNOWN);
     config_server.send(200, "text/html; charset=utf-8", "");
     String html;
-    html.reserve(4096);
+    html.reserve(8192);  // >4096 → PSRAM via SPIRAM threshold
     auto flush = [&]() {
         if (html.length() > 0) {
             config_server.sendContent(html);
