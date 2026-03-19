@@ -1067,6 +1067,15 @@ void handle_save_gauges() {
         }
     }
 
+    // Sync gauge_cal → screen_configs.cal before SD/NVS writes.
+    // The form values were written to gauge_cal above, but screen_configs.cal
+    // still holds the old values. Without this copy the calibration angles
+    // are silently lost when saving to SD.
+    for (int s = s_start; s < s_end; ++s)
+        for (int g = 0; g < 2; ++g)
+            for (int p = 0; p < 5; ++p)
+                screen_configs[s].cal[g][p] = gauge_cal[s][g][p];
+
     // Write per-screen binary configs to SD
     if (!SD_MMC.exists("/config")) SD_MMC.mkdir("/config");
     for (int s2 = s_start; s2 < s_end; ++s2) {
