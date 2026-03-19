@@ -1092,26 +1092,27 @@ void handle_gauges_screen() {
     html += "<label><input type='radio' name='compass_hdg_src_" + String(s) + "' value='navigation.headingTrue'";
     if (!isMag) html += " checked";
     html += "> True (HDG &deg;T)</label></div>";
-    // Compass extra data fields
+    // Compass extra data fields — use compass_bl_*/compass_br_* names to avoid
+    // clashing with the identically-named inputs in the Quad config section.
     html += "<h4>Extra Data Fields</h4><div style='display:flex;gap:16px;flex-wrap:wrap;'>";
     // BL
     html += "<div style='flex:1;min-width:200px;'><h5>Bottom-Left</h5>";
-    html += "<div style='margin-bottom:4px;'><label>SignalK Path: <input name='quad_bl_path_" + String(s) + "' type='text' value='" + String(screen_configs[s].quad_bl_path) + "' style='width:90%'></label></div>";
-    html += "<div style='margin-bottom:4px;'><label>Font Size: <select name='quad_bl_font_size_" + String(s) + "'>";
+    html += "<div style='margin-bottom:4px;'><label>SignalK Path: <input name='compass_bl_path_" + String(s) + "' type='text' value='" + String(screen_configs[s].quad_bl_path) + "' style='width:90%'></label></div>";
+    html += "<div style='margin-bottom:4px;'><label>Font Size: <select name='compass_bl_font_size_" + String(s) + "'>";
     html += "<option value='0'" + String(screen_configs[s].quad_bl_font_size == 0 ? " selected" : "") + ">Small (48pt)</option>";
     html += "<option value='1'" + String(screen_configs[s].quad_bl_font_size == 1 ? " selected" : "") + ">Medium (72pt)</option>";
     html += "<option value='2'" + String(screen_configs[s].quad_bl_font_size == 2 ? " selected" : "") + ">Large (96pt)</option>";
     html += "</select></label></div>";
-    html += "<div style='margin-bottom:4px;'><label>Font Color: <input name='quad_bl_font_color_" + String(s) + "' type='color' value='" + String(screen_configs[s].quad_bl_font_color[0] ? screen_configs[s].quad_bl_font_color : "#FFFFFF") + "'></label></div></div>";
+    html += "<div style='margin-bottom:4px;'><label>Font Color: <input name='compass_bl_font_color_" + String(s) + "' type='color' value='" + String(screen_configs[s].quad_bl_font_color[0] ? screen_configs[s].quad_bl_font_color : "#FFFFFF") + "'></label></div></div>";
     // BR
     html += "<div style='flex:1;min-width:200px;'><h5>Bottom-Right</h5>";
-    html += "<div style='margin-bottom:4px;'><label>SignalK Path: <input name='quad_br_path_" + String(s) + "' type='text' value='" + String(screen_configs[s].quad_br_path) + "' style='width:90%'></label></div>";
-    html += "<div style='margin-bottom:4px;'><label>Font Size: <select name='quad_br_font_size_" + String(s) + "'>";
+    html += "<div style='margin-bottom:4px;'><label>SignalK Path: <input name='compass_br_path_" + String(s) + "' type='text' value='" + String(screen_configs[s].quad_br_path) + "' style='width:90%'></label></div>";
+    html += "<div style='margin-bottom:4px;'><label>Font Size: <select name='compass_br_font_size_" + String(s) + "'>";
     html += "<option value='0'" + String(screen_configs[s].quad_br_font_size == 0 ? " selected" : "") + ">Small (48pt)</option>";
     html += "<option value='1'" + String(screen_configs[s].quad_br_font_size == 1 ? " selected" : "") + ">Medium (72pt)</option>";
     html += "<option value='2'" + String(screen_configs[s].quad_br_font_size == 2 ? " selected" : "") + ">Large (96pt)</option>";
     html += "</select></label></div>";
-    html += "<div style='margin-bottom:4px;'><label>Font Color: <input name='quad_br_font_color_" + String(s) + "' type='color' value='" + String(screen_configs[s].quad_br_font_color[0] ? screen_configs[s].quad_br_font_color : "#FFFFFF") + "'></label></div></div>";
+    html += "<div style='margin-bottom:4px;'><label>Font Color: <input name='compass_br_font_color_" + String(s) + "' type='color' value='" + String(screen_configs[s].quad_br_font_color[0] ? screen_configs[s].quad_br_font_color : "#FFFFFF") + "'></label></div></div>";
     html += "</div></div>"; // end compass
     flushHtml();
 
@@ -1600,6 +1601,20 @@ void handle_save_gauges() {
                     if (screen_configs[s].display_type == DISPLAY_TYPE_COMPASS && config_server.hasArg(compassBgColorKey)) {
                         strncpy(screen_configs[s].number_bg_color, config_server.arg(compassBgColorKey).c_str(), 7);
                         screen_configs[s].number_bg_color[7] = '\0';
+                    }
+
+                    // Save compass extra data fields (BL/BR) — uses compass_bl_*/compass_br_* form names
+                    if (screen_configs[s].display_type == DISPLAY_TYPE_COMPASS) {
+                        auto saveCompassField = [&](const char* pos, char* path, uint8_t& size, char* color) {
+                            String pk = "compass_" + String(pos) + "_path_" + String(s);
+                            if (config_server.hasArg(pk)) { strncpy(path, config_server.arg(pk).c_str(), 127); path[127] = '\0'; }
+                            String sk = "compass_" + String(pos) + "_font_size_" + String(s);
+                            if (config_server.hasArg(sk)) { size = config_server.arg(sk).toInt(); }
+                            String ck = "compass_" + String(pos) + "_font_color_" + String(s);
+                            if (config_server.hasArg(ck)) { strncpy(color, config_server.arg(ck).c_str(), 7); color[7] = '\0'; }
+                        };
+                        saveCompassField("bl", screen_configs[s].quad_bl_path, screen_configs[s].quad_bl_font_size, screen_configs[s].quad_bl_font_color);
+                        saveCompassField("br", screen_configs[s].quad_br_path, screen_configs[s].quad_br_font_size, screen_configs[s].quad_br_font_color);
                     }
                     
                     // Save quad display settings (TL, TR, BL, BR)
