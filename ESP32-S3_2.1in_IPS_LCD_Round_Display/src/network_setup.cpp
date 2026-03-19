@@ -311,6 +311,7 @@ void save_preferences() {
                 bst.println(saved_signalk_ip);
                 bst.println(String(saved_signalk_port));
                 for (int i = 0; i < NUM_SCREENS * 2; ++i) bst.println(signalk_paths[i]);
+                bst.flush();
                 bst.close();
                 Serial.println("[NVS REPAIR] Wrote /config/nvs_backup_settings.txt");
             } else {
@@ -320,6 +321,7 @@ void save_preferences() {
             File bsf = SD_MMC.open("/config/nvs_backup_screens.bin", FILE_WRITE);
             if (bsf) {
                 bsf.write((const uint8_t *)screen_configs, sizeof(ScreenConfig) * NUM_SCREENS);
+                bsf.flush();
                 bsf.close();
                 Serial.println("[NVS REPAIR] Wrote /config/nvs_backup_screens.bin");
             } else {
@@ -389,8 +391,8 @@ void save_preferences() {
         Serial.printf("[DEBUG] signalk_paths[%d] = '%s'\n", i, signalk_paths[i].c_str());
     }
 
-    if (!any_nvs_ok) {
-        Serial.println("[SD SAVE] NVS blob writes failed; saving screen configs to SD as fallback...");
+    {
+        Serial.println("[SD SAVE] Saving screen configs to SD...");
         if (!SD_MMC.exists("/config")) SD_MMC.mkdir("/config");
         for (int s = 0; s < NUM_SCREENS; ++s) {
             char sdpath[64];
@@ -398,6 +400,7 @@ void save_preferences() {
             File f = SD_MMC.open(sdpath, FILE_WRITE);
             if (!f) { Serial.printf("[SD SAVE] Failed to open '%s'\n", sdpath); continue; }
             size_t written = f.write((const uint8_t *)&screen_configs[s], sizeof(ScreenConfig));
+            f.flush();
             f.close();
             Serial.printf("[SD SAVE] Wrote '%s' -> %u bytes\n", sdpath, (unsigned)written);
         }
@@ -426,6 +429,7 @@ void save_preferences() {
         for (int i = 0; i < NUM_SCREENS * 2; ++i) {
             spf.println(signalk_paths[i]);
         }
+        spf.flush();
         spf.close();
         Serial.println("[SD SAVE] Wrote /config/signalk_paths.txt");
     } else {
@@ -574,6 +578,11 @@ void load_preferences() {
                     size_t got = f.read((uint8_t *)&screen_configs[s], sizeof(ScreenConfig));
                     Serial.printf("[SD LOAD] Read '%s' -> %u bytes (expected %u)\n", sdpath, (unsigned)got, (unsigned)sizeof(ScreenConfig));
                     f.close();
+                    if (got != sizeof(ScreenConfig)) {
+                        Serial.printf("[SD LOAD] Size mismatch for '%s', restoring defaults\n", sdpath);
+                        memset(&screen_configs[s], 0, sizeof(ScreenConfig));
+                        continue;
+                    }
                     // Validate loaded config
                     bool valid = true;
                     for (int g = 0; g < 2 && valid; ++g) {
@@ -1077,14 +1086,26 @@ void handle_save_gauges() {
                 screen_configs[s].cal[g][p] = gauge_cal[s][g][p];
 
     // Write per-screen binary configs to SD
-    if (!SD_MMC.exists("/config")) SD_MMC.mkdir("/config");
-    for (int s2 = s_start; s2 < s_end; ++s2) {
-        char sdpath[64];
-        snprintf(sdpath, sizeof(sdpath), "/config/screen%d.bin", s2);
-        File sf = SD_MMC.open(sdpath, FILE_WRITE);
-        if (sf) {
-            sf.write((const uint8_t *)&screen_configs[s2], sizeof(ScreenConfig));
-            sf.close();
+    bool sd_available = true;
+    if (SD_MMC.cardType() == CARD_NONE) {
+        Serial.println("[SD SAVE] No SD card detected, attempting remount...");
+        SD_MMC.end();
+        if (!SD_MMC.begin("/sdcard", true)) {
+            Serial.println("[SD SAVE] SD remount failed; skipping SD writes");
+            sd_available = false;
+        }
+    }
+    if (sd_available) {
+        if (!SD_MMC.exists("/config")) SD_MMC.mkdir("/config");
+        for (int s2 = s_start; s2 < s_end; ++s2) {
+            char sdpath[64];
+            snprintf(sdpath, sizeof(sdpath), "/config/screen%d.bin", s2);
+            File sf = SD_MMC.open(sdpath, FILE_WRITE);
+            if (sf) {
+                sf.write((const uint8_t *)&screen_configs[s2], sizeof(ScreenConfig));
+                sf.flush();
+                sf.close();
+            }
         }
     }
 
@@ -1659,6 +1680,7 @@ void handle_assets_upload() {
         }
     } else if (upload.status == UPLOAD_FILE_END) {
         if (assets_upload_file) {
+            assets_upload_file.flush();
             assets_upload_file.close();
             Serial.printf("[ASSETS] Upload finished: %s (%u bytes)\n", upload.filename.c_str(), (unsigned)upload.totalSize);
         }

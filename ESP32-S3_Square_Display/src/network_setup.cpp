@@ -399,6 +399,7 @@ void save_preferences(bool skip_screen_blobs = false) {
                 bst.println(saved_signalk_ip);
                 bst.println(String(saved_signalk_port));
                 for (int i = 0; i < NUM_SCREENS * 2; ++i) bst.println(signalk_paths[i]);
+                bst.flush();
                 bst.close();
                 Serial.println("[NVS REPAIR] Wrote /config/nvs_backup_settings.txt");
             } else {
@@ -408,6 +409,7 @@ void save_preferences(bool skip_screen_blobs = false) {
             File bsf = SD_MMC.open("/config/nvs_backup_screens.bin", FILE_WRITE);
             if (bsf) {
                 bsf.write((const uint8_t *)screen_configs, sizeof(ScreenConfig) * NUM_SCREENS);
+                bsf.flush();
                 bsf.close();
                 Serial.println("[NVS REPAIR] Wrote /config/nvs_backup_screens.bin");
             } else {
@@ -469,8 +471,10 @@ void save_preferences(bool skip_screen_blobs = false) {
         }
     }
 
-    if (!any_nvs_ok) {
-        Serial.println("[SD SAVE] NVS blob writes failed; saving screen configs to SD as fallback...");
+    // Always write to SD regardless of NVS state — SD is the primary store.
+    {
+        Serial.println(any_nvs_ok ? "[SD SAVE] NVS OK; also writing to SD for redundancy"
+                                   : "[SD SAVE] NVS blob writes failed; saving to SD as fallback");
         if (!SD_MMC.exists("/config")) SD_MMC.mkdir("/config");
         // Batch write: all screens in one file — 3 FAT ops instead of 15
         {
@@ -480,6 +484,7 @@ void save_preferences(bool skip_screen_blobs = false) {
                 Serial.println("[SD SAVE] Failed to open /config/screens.bin.tmp");
             } else {
                 size_t written = f.write((const uint8_t *)screen_configs, total);
+                f.flush();
                 f.close();
                 if (written == total) {
                     SD_MMC.remove("/config/screens.bin");
@@ -498,11 +503,12 @@ void save_preferences(bool skip_screen_blobs = false) {
             for (int i = 0; i < NUM_SCREENS * 2; ++i) {
                 spf.println(signalk_paths[i]);
             }
+            spf.flush();
             spf.close();
         } else {
             Serial.println("[SD SAVE] Failed to open /config/signalk_paths.txt for writing");
         }
-    } // end if (!any_nvs_ok)
+    }
 } // end save_preferences
 
 // Load preferences and screen configs from NVS or SD fallback
@@ -643,27 +649,33 @@ void load_preferences() {
         File f = SD_MMC.open("/config/screens.bin", FILE_READ);
         if (f) {
             size_t total = sizeof(ScreenConfig) * NUM_SCREENS;
-            size_t got = f.read((uint8_t *)screen_configs, total);
-            f.close();
-            Serial.printf("[SD LOAD] Read /config/screens.bin -> %u bytes (expected %u)\n", (unsigned)got, (unsigned)total);
-            if (got == total) {
-                for (int s = 0; s < NUM_SCREENS; ++s) {
-                    bool valid = true;
-                    for (int g = 0; g < 2 && valid; ++g) {
-                        for (int p = 0; p < 5; ++p) {
-                            if (screen_configs[s].cal[g][p].angle < -360 || screen_configs[s].cal[g][p].angle > 360) {
-                                valid = false; break;
+            if (f.size() != total) {
+                Serial.printf("[SD LOAD] File size mismatch: got %u, expected %u, skipping batch read\n",
+                              (unsigned)f.size(), (unsigned)total);
+                f.close();
+            } else {
+                size_t got = f.read((uint8_t *)screen_configs, total);
+                f.close();
+                Serial.printf("[SD LOAD] Read /config/screens.bin -> %u bytes (expected %u)\n", (unsigned)got, (unsigned)total);
+                if (got == total) {
+                    for (int s = 0; s < NUM_SCREENS; ++s) {
+                        bool valid = true;
+                        for (int g = 0; g < 2 && valid; ++g) {
+                            for (int p = 0; p < 5; ++p) {
+                                if (screen_configs[s].cal[g][p].angle < -360 || screen_configs[s].cal[g][p].angle > 360) {
+                                    valid = false; break;
+                                }
                             }
                         }
-                    }
-                    if (!valid) {
-                        Serial.printf("[CONFIG ERROR] SD batch config for screen %d invalid, restoring defaults\n", s);
-                        memset(&screen_configs[s], 0, sizeof(ScreenConfig));
-                    } else {
-                        restored_from_sd = true;
+                        if (!valid) {
+                            Serial.printf("[CONFIG ERROR] SD batch config for screen %d invalid, restoring defaults\n", s);
+                            memset(&screen_configs[s], 0, sizeof(ScreenConfig));
+                        } else {
+                            restored_from_sd = true;
+                        }
                     }
                 }
-            }
+            } // end size check
         } else {
             Serial.println("[SD LOAD] Failed to open /config/screens.bin");
         }
@@ -1808,8 +1820,20 @@ void handle_save_gauges() {
                 Serial.flush();
             }
         }
-        if (!SD_MMC.exists("/config")) SD_MMC.mkdir("/config");
+        // Verify SD is still mounted; attempt remount if needed
+        bool sd_available = true;
+        if (SD_MMC.cardType() == CARD_NONE) {
+            Serial.println("[SD SAVE] Card not mounted, attempting remount...");
+            SD_MMC.end();
+            if (!SD_MMC.begin("/sdcard", true)) {
+                Serial.println("[SD SAVE] Remount failed, falling back to NVS");
+                sd_available = false;
+            }
+        }
         int sd_ok_count = 0;
+        bool sd_all_ok = false;
+        if (sd_available) {
+        if (!SD_MMC.exists("/config")) SD_MMC.mkdir("/config");
         // Batch write: all screens in one file — 3 FAT ops instead of 15
         {
             size_t total = sizeof(ScreenConfig) * NUM_SCREENS;
@@ -1820,6 +1844,7 @@ void handle_save_gauges() {
             }
             if (sf) {
                 size_t wrote = sf.write((const uint8_t *)screen_configs, total);
+                sf.flush();
                 sf.close();
                 if (wrote == total) {
                     SD_MMC.remove("/config/screens.bin");  // remove old only after full write
@@ -1835,7 +1860,7 @@ void handle_save_gauges() {
                 Serial.println("[SD SAVE] Failed to open /config/screens.bin.tmp for writing");
             }
         }
-        bool sd_all_ok = (sd_ok_count == NUM_SCREENS);
+        sd_all_ok = (sd_ok_count == NUM_SCREENS);
         if (sd_all_ok) Serial.printf("[SD SAVE] All %d screens OK, skipping NVS blob writes\n", NUM_SCREENS);
 
         // Write SignalK gauge paths to SD so they persist without NVS writes.
@@ -1853,6 +1878,7 @@ void handle_save_gauges() {
                 for (int i = 0; i < NUM_SCREENS * 2; ++i) {
                     spf.println(signalk_paths[i]);
                 }
+                spf.flush();
                 spf.close();
                 SD_MMC.remove("/config/signalk_paths.txt");
                 SD_MMC.rename("/config/signalk_paths.tmp", "/config/signalk_paths.txt");
@@ -1862,9 +1888,13 @@ void handle_save_gauges() {
                 sd_all_ok = false;  // trigger NVS save below
             }
         }
+        } // end if (sd_available)
         if (!sd_all_ok) {
             // SD failed: fall back to full NVS persist
             save_preferences(false);
+        } else {
+            // SD succeeded: persist WiFi/device settings to NVS, skip screen blobs
+            save_preferences(true);
         }
 
         // Do NOT schedule WS resume here — the user is still on the config page
@@ -2631,6 +2661,7 @@ void handle_assets_upload() {
         }
     } else if (upload.status == UPLOAD_FILE_END) {
         if (assets_upload_file) {
+            assets_upload_file.flush();
             assets_upload_file.close();
             Serial.printf("[ASSETS] Upload finished (SD_MMC): %s (%u bytes)\n", upload.filename.c_str(), (unsigned)upload.totalSize);
         } else if (assets_upload_fp) {
