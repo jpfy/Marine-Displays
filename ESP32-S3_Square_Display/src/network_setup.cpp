@@ -1411,6 +1411,7 @@ void handle_save_gauges() {
             save_only = config_server.arg("save_screen").toInt();
             if (save_only < 0 || save_only >= NUM_SCREENS) save_only = -1;
         }
+        Serial.printf("[SAVE] POST args=%d, save_screen=%d\n", config_server.args(), save_only);
         int s_start = (save_only >= 0) ? save_only : 0;
         int s_end   = (save_only >= 0) ? save_only + 1 : NUM_SCREENS;
         for (int s = s_start; s < s_end; ++s) {
@@ -1580,6 +1581,9 @@ void handle_save_gauges() {
                     if (config_server.hasArg(dualBottomPathKey)) {
                         strncpy(screen_configs[s].dual_bottom_path, config_server.arg(dualBottomPathKey).c_str(), 127);
                         screen_configs[s].dual_bottom_path[127] = '\0';
+                        Serial.printf("[SAVE] dual_bottom_path_%d = '%s'\n", s, screen_configs[s].dual_bottom_path);
+                    } else {
+                        Serial.printf("[SAVE] dual_bottom_path_%d MISSING from POST\n", s);
                     }
                     
                     String dualBottomFontSizeKey = "dual_bottom_font_size_" + String(s);
@@ -1627,6 +1631,9 @@ void handle_save_gauges() {
                         if (config_server.hasArg(pathKey)) {
                             strncpy(path, config_server.arg(pathKey).c_str(), 127);
                             path[127] = '\0';
+                            Serial.printf("[SAVE] quad_%s_path_%d = '%s'\n", name, s, path);
+                        } else {
+                            Serial.printf("[SAVE] quad_%s_path_%d MISSING from POST\n", name, s);
                         }
                         String sizeKey = "quad_" + String(name) + "_font_size_" + String(s);
                         if (config_server.hasArg(sizeKey)) {
@@ -1812,6 +1819,15 @@ void handle_save_gauges() {
             for (int g = 0; g < 2; ++g)
                 for (int p = 0; p < 5; ++p)
                     screen_configs[s].cal[g][p] = gauge_cal[s][g][p];
+
+        // Debug: dump quad/dual bottom paths before SD write
+        for (int s = s_start; s < s_end; ++s) {
+            Serial.printf("[PRE-SD] s=%d quad: tl='%s' tr='%s' bl='%s' br='%s'\n", s,
+                screen_configs[s].quad_tl_path, screen_configs[s].quad_tr_path,
+                screen_configs[s].quad_bl_path, screen_configs[s].quad_br_path);
+            Serial.printf("[PRE-SD] s=%d dual: top='%s' bottom='%s'\n", s,
+                screen_configs[s].dual_top_path, screen_configs[s].dual_bottom_path);
+        }
 
         // Attempt to write per-screen binary configs to SD immediately so toggles
         // (like show_bottom) persist even if NVS writes fail or are delayed.
