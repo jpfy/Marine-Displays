@@ -1,5 +1,6 @@
 #include <Preferences.h>
 #include <esp_err.h>
+#include <WiFi.h>
 // Global test mode flag: disables live data updates when true
 bool test_mode = false;
 #include <Arduino.h>
@@ -44,6 +45,10 @@ bool apply_screen_visuals_for_one(int s);
 #include "driver/spi_master.h"
 
 // External UI elements (per-screen icons are declared in ui_ScreenN.h via ui.h)
+
+// Screen-off power saving state
+bool     g_screen_is_off      = false;
+uint32_t g_last_activity_ms   = 0;   // updated on touch; also used by LVGL_Driver
 
 // Animation state tracking
 static int16_t current_needle_angle = 0;
@@ -1139,6 +1144,7 @@ void setup() {
     Serial.flush();
     setup_network();
     Serial.println("WiFi setup complete");
+    g_last_activity_ms = millis(); // start the inactivity timer after boot
     Serial.flush();
 
     // Heap integrity check after WiFi/network init
@@ -1176,6 +1182,24 @@ void setup() {
 
 void loop() {
     config_server.handleClient();
+
+    // --- Screen-off timeout ---------------------------------------------------
+    // g_last_activity_ms is updated on every touch in Lvgl_Touchpad_Read().
+    // When the timeout fires: backlight off + WiFi modem sleep.
+    // Wake is handled in Lvgl_Touchpad_Read(): first touch restores everything
+    // and is swallowed so it doesn't trigger a UI action.
+    if (screen_off_timeout_min > 0) {
+        uint32_t now_ms = millis();
+        uint32_t timeout_ms = (uint32_t)screen_off_timeout_min * 60UL * 1000UL;
+        if (!g_screen_is_off && (now_ms - g_last_activity_ms >= timeout_ms)) {
+            g_screen_is_off = true;
+            Set_Backlight(0);
+            WiFi.setSleep(true);
+            Serial.println("[SCREEN] Screen off — power saving active");
+        }
+    }
+    // -------------------------------------------------------------------------
+
     // Use Signal K data instead of demo animation
     static int16_t needle_angle = 0;
     static int16_t lower_needle_angle = 0;
@@ -1560,17 +1584,23 @@ void loop() {
         }
     }
 
-    // Maintain TCA9554 PIN6 LOW (buzzer OFF, active-HIGH circuit) every 50ms.
-    // esp_io_expander_new_i2c_tca9554 resets CONFIG=0xFF (all inputs) during LCD_Init;
-    // Buzzer safety maintenance (V3 only — V3 TCA9554 CONFIG can reset to all-inputs).
-    // On V4, BEE_EN is kept as input via direction mask 0x3A → inherently safe.
-    if (!is_board_v4()) {
+    // Buzzer safety maintenance — runs for both v3 and v4 every 50 ms.
+    // After a crash-reboot the I2C bus can be mid-transaction so the direction
+    // write in setup() silently fails, leaving BEE_EN/PIN6 as OUTPUT HIGH.
+    // Periodically re-assert the safe state so the buzzer can never stay stuck.
+    {
         static unsigned long last_buz_maintain = 0;
         unsigned long now_m = millis();
         if (now_m - last_buz_maintain >= 50) {
             last_buz_maintain = now_m;
-            Set_EXIOS(Read_EXIOS(exio_output_reg()) & (uint8_t)~(1 << (EXIO_PIN6 - 1)));
-            Mode_EXIOS(0x00);
+            if (is_board_v4()) {
+                // Clear BEE_EN output latch (bit6) and keep direction as INPUT
+                Set_EXIOS(Read_EXIOS(exio_output_reg()) & (uint8_t)~(1 << (PIN_BEE_EN - 1)));
+                Mode_EXIO(PIN_BEE_EN, 1); // input = safe (can't drive buzzer)
+            } else {
+                Set_EXIOS(Read_EXIOS(exio_output_reg()) & (uint8_t)~(1 << (EXIO_PIN6 - 1)));
+                Mode_EXIOS(0x00);
+            }
         }
     }
 

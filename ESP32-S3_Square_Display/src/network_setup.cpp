@@ -18,6 +18,8 @@
 #include <SD_MMC.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <Update.h>
+#include <esp_ota_ops.h>
 
 // ...existing code...
 
@@ -47,14 +49,23 @@ extern "C" void show_fallback_error_screen_if_needed() {
             }
         }
     }
-    if (all_default) {
+    if (all_default && !g_error_screen_active) {
         Serial.println("[ERROR] All screen configs are default/blank. Showing fallback error screen.");
         g_error_screen_active = true;
         #ifdef LVGL_H
+        // Do NOT call lv_obj_clean() — that frees the global UI object pointers
+        // (ui_TopIcon1, ui_Needle, etc.) while loop() continues to use them,
+        // causing dangling-pointer PSRAM heap corruption.
+        // Create an opaque overlay instead so existing objects stay valid.
         lv_obj_t *scr = lv_scr_act();
-        lv_obj_clean(scr);
-        lv_obj_t *label = lv_label_create(scr);
-        lv_label_set_text(label, "ERROR: No valid config loaded.\nCheck SD card or NVS.");
+        lv_obj_t *overlay = lv_obj_create(scr);
+        lv_obj_set_size(overlay, LV_HOR_RES, LV_VER_RES);
+        lv_obj_set_style_bg_color(overlay, lv_color_black(), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(overlay, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_border_width(overlay, 0, LV_PART_MAIN);
+        lv_obj_align(overlay, LV_ALIGN_CENTER, 0, 0);
+        lv_obj_t *label = lv_label_create(overlay);
+        lv_label_set_text(label, "ERROR: No valid config loaded.\nCheck SD card or NVS.\n\nConnect to WiFi AP:\nESP32-SquareDisplay\nThen open 192.168.4.1");
         lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
         #endif
     }
@@ -87,6 +98,7 @@ extern "C" void show_fallback_error_screen_if_needed() {
 #include <esp_err.h>
 #include "esp_log.h"
 #include "needle_style.h"
+#include "TCA9554PWR.h"
 
 static const char *TAG_SETUP = "network_setup";
 
@@ -217,6 +229,10 @@ void handle_assets_page();
 void handle_assets_upload();
 void handle_assets_upload_post();
 void handle_assets_delete();
+// OTA firmware update handlers
+void handle_ota_page();
+void handle_ota_upload();
+void handle_ota_post();
 // Hot-update helper (apply backgrounds/icons at runtime)
 extern bool apply_all_screen_visuals();
 
@@ -233,6 +249,8 @@ String saved_hostname = "";
 String signalk_paths[NUM_SCREENS * 2];
 // Auto-scroll interval in seconds (0 = off)
 uint16_t auto_scroll_sec = 0;
+// Screen-off timeout in minutes (0 = always on)
+uint16_t screen_off_timeout_min = 0;
 // Skip a single load of preferences when we've just saved, so the UI
 // reflects the in-memory `screen_configs` we just updated instead of
 // reloading possibly-stale NVS values.
@@ -331,6 +349,7 @@ void save_preferences(bool skip_screen_blobs = false) {
         // Save auto-scroll setting
         preferences.putUShort("auto_scroll", auto_scroll_sec);
         preferences.putUShort("unit_system", (uint16_t)unit_system);
+        preferences.putUShort("screen_off_tmout", screen_off_timeout_min);
         for (int i = 0; i < NUM_SCREENS * 2; ++i) {
             String key = String("skpath_") + i;
             preferences.putString(key.c_str(), signalk_paths[i]);
@@ -436,6 +455,7 @@ void save_preferences(bool skip_screen_blobs = false) {
                     preferences.putUShort("buzzer_cooldown", buzzer_cooldown_sec);
                     preferences.putUShort("auto_scroll", auto_scroll_sec);
                     preferences.putUShort("unit_system", (uint16_t)unit_system);
+                    preferences.putUShort("screen_off_tmout", screen_off_timeout_min);
                     for (int i = 0; i < NUM_SCREENS * 2; ++i) {
                         String key = String("skpath_") + i;
                         preferences.putString(key.c_str(), signalk_paths[i]);
@@ -525,6 +545,7 @@ void load_preferences() {
         // Load auto-scroll interval (seconds)
         auto_scroll_sec = preferences.getUShort("auto_scroll", 0);
         unit_system = (UnitSystem)preferences.getUShort("unit_system", (uint16_t)UNIT_NAUTICAL_METRIC);
+        screen_off_timeout_min = preferences.getUShort("screen_off_tmout", 0);
         // Load device settings
         buzzer_mode = (int)preferences.getUShort("buzzer_mode", (uint16_t)buzzer_mode);
         buzzer_cooldown_sec = preferences.getUShort("buzzer_cooldown", buzzer_cooldown_sec);
@@ -2001,6 +2022,7 @@ void handle_root() {
     html += "<button class='tab-btn' onclick=\"location.href='/needles'\">Needles</button>";
     html += "<button class='tab-btn' onclick=\"location.href='/assets'\">Assets</button>";
     html += "<button class='tab-btn' onclick=\"location.href='/device'\">Device Settings</button>";
+    html += "<button class='tab-btn' onclick=\"location.href='/update'\">Firmware Update</button>";
     html += "</div>"; // root-actions
     html += "</div>"; // tab-content
     html += "</div></body></html>";
@@ -2136,19 +2158,17 @@ void handle_device_page() {
     html += "<div class='tab-content'>";
     html += "<h2>Device Settings</h2>";
     html += "<form method='POST' action='/save-device'>";
-    // Buzzer mode
-    html += "<div class='form-row'><label>Buzzer Mode:</label><select name='buzzer_mode'>";
+    // Buzzer mode + cooldown on one row
+    html += "<div class='form-row'><label>Buzzer:</label><select name='buzzer_mode'>";
     html += "<option value='0'" + String(buzzer_mode==0?" selected":"") + ">Off</option>";
     html += "<option value='1'" + String(buzzer_mode==1?" selected":"") + ">Global</option>";
     html += "<option value='2'" + String(buzzer_mode==2?" selected":"") + ">Per-screen</option>";
-    html += "</select></div>";
-    // Buzzer cooldown (dropdown matching screen options)
-    html += "<div class='form-row'><label>Buzzer Cooldown:</label><select name='buzzer_cooldown'>";
+    html += "</select><select name='buzzer_cooldown'>";
     html += "<option value='0'" + String(buzzer_cooldown_sec==0?" selected":"") + ">Constant</option>";
-    html += "<option value='5'" + String(buzzer_cooldown_sec==5?" selected":"") + ">5s</option>";
-    html += "<option value='10'" + String(buzzer_cooldown_sec==10?" selected":"") + ">10s</option>";
-    html += "<option value='30'" + String(buzzer_cooldown_sec==30?" selected":"") + ">30s</option>";
-    html += "<option value='60'" + String(buzzer_cooldown_sec==60?" selected":"") + ">60s</option>";
+    html += "<option value='5'" + String(buzzer_cooldown_sec==5?" selected":"") + ">5s pause</option>";
+    html += "<option value='10'" + String(buzzer_cooldown_sec==10?" selected":"") + ">10s pause</option>";
+    html += "<option value='30'" + String(buzzer_cooldown_sec==30?" selected":"") + ">30s pause</option>";
+    html += "<option value='60'" + String(buzzer_cooldown_sec==60?" selected":"") + ">60s pause</option>";
     html += "</select></div>";
     // Auto-scroll (dropdown matching screen options)
     html += "<div class='form-row'><label>Auto-scroll:</label><select name='auto_scroll'>";
@@ -2157,6 +2177,14 @@ void handle_device_page() {
     html += "<option value='10'" + String(auto_scroll_sec==10?" selected":"") + ">10s</option>";
     html += "<option value='30'" + String(auto_scroll_sec==30?" selected":"") + ">30s</option>";
     html += "<option value='60'" + String(auto_scroll_sec==60?" selected":"") + ">60s</option>";
+    html += "</select></div>";
+    // Screen off timeout
+    html += "<div class='form-row'><label>Screen Sleep:</label><select name='screen_off_timeout'>";
+    html += "<option value='0'"  + String(screen_off_timeout_min==0 ?" selected":"") + ">Always on</option>";
+    html += "<option value='1'"  + String(screen_off_timeout_min==1 ?" selected":"") + ">1 min</option>";
+    html += "<option value='5'"  + String(screen_off_timeout_min==5 ?" selected":"") + ">5 min</option>";
+    html += "<option value='10'" + String(screen_off_timeout_min==10?" selected":"") + ">10 min</option>";
+    html += "<option value='30'" + String(screen_off_timeout_min==30?" selected":"") + ">30 min</option>";
     html += "</select></div>";
     // Brightness
     html += "<div class='form-row'><label>Brightness:</label><select name='brightness_lv'>";
@@ -2214,7 +2242,13 @@ void handle_save_device() {
         auto_scroll_sec = asc;
         // Apply auto-scroll at runtime
         set_auto_scroll_interval(auto_scroll_sec);
-        
+
+        // Screen off timeout
+        uint16_t sot = (uint16_t)config_server.arg("screen_off_timeout").toInt();
+        // Only accept the allowed values; anything else → always on
+        if (sot != 1 && sot != 5 && sot != 10 && sot != 30) sot = 0;
+        screen_off_timeout_min = sot;
+
         // Brightness level
         uint8_t bl = (uint8_t)config_server.arg("brightness_lv").toInt();
         if (bl > 3) bl = 0;
@@ -2348,6 +2382,15 @@ void setup_network() {
         delay(500);
         Serial.print(".");
         tries++;
+        // Silence buzzer during WiFi wait — setup() may have left BEE_EN/PIN6
+        // HIGH if the I2C expander direction write failed after a crash-reboot.
+        if (is_board_v4()) {
+            Set_EXIOS(Read_EXIOS(exio_output_reg()) & (uint8_t)~(1 << (PIN_BEE_EN - 1)));
+            Mode_EXIO(PIN_BEE_EN, 1);
+        } else {
+            Set_EXIOS(Read_EXIOS(exio_output_reg()) & (uint8_t)~(1 << (EXIO_PIN6 - 1)));
+            Mode_EXIOS(0x00);
+        }
     }
     if (WiFi.status() == WL_CONNECTED) {
         // Disable power-save so the radio stays awake between loop() calls.
@@ -2367,6 +2410,9 @@ void setup_network() {
         Serial.println("\nWiFi failed, starting AP mode");
         WiFi.mode(WIFI_AP);
         WiFi.softAP("ESP32-SquareDisplay", "12345678");
+        // Disable modem sleep in AP mode — keeps the radio awake for pings
+        // and web page requests (avoids intermittent packet loss).
+        WiFi.setSleep(false);
         Serial.print("AP IP: ");
         Serial.println(WiFi.softAPIP());
     }
@@ -2397,6 +2443,8 @@ void setup_network() {
     config_server.on("/toggle-test-mode", HTTP_POST, handle_toggle_test_mode);
     config_server.on("/set-screen", handle_set_screen);
     config_server.on("/nvs_test", HTTP_GET, handle_nvs_test);
+    config_server.on("/update", HTTP_GET,  handle_ota_page);
+    config_server.on("/update", HTTP_POST, handle_ota_post, handle_ota_upload);
     config_server.begin();
     Serial.println("[WebServer] Configuration web UI started on port 80");
     // handleClient() is called from loop() on Core 1.
@@ -2800,4 +2848,100 @@ void handle_assets_delete() {
     // redirect back
     config_server.sendHeader("Location", "/assets");
     config_server.send(303, "text/plain", "");
+}
+
+// ---------------------------------------------------------------------------
+// OTA firmware update handlers
+// ---------------------------------------------------------------------------
+void handle_ota_upload() {
+    HTTPUpload& upload = config_server.upload();
+    if (upload.status == UPLOAD_FILE_START) {
+        Serial.printf("[OTA] Start: %s\n", upload.filename.c_str());
+        // UPDATE_SIZE_UNKNOWN lets the Update library size from the partition table
+        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+            Update.printError(Serial);
+        }
+    } else if (upload.status == UPLOAD_FILE_WRITE) {
+        esp_task_wdt_reset();
+        if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+            Update.printError(Serial);
+        }
+    } else if (upload.status == UPLOAD_FILE_END) {
+        esp_task_wdt_reset();   // end() verifies hash — can take a moment
+        if (Update.end(true)) {
+            Serial.printf("[OTA] Success: %u bytes\n",
+                          (unsigned)upload.totalSize);
+        } else {
+            Update.printError(Serial);
+        }
+    }
+}
+
+void handle_ota_post() {
+    bool ok = !Update.hasError();
+    String html = "<!DOCTYPE html><html><head>";
+    html += "<meta charset='UTF-8'>";
+    if (ok) html += "<meta http-equiv='refresh' content='20;url=/'>";
+    html += STYLE;
+    html += "<title>OTA Update</title></head><body><div class='container'>";
+    if (ok) {
+        html += "<h3>Update successful</h3>";
+        html += "<p>Device is rebooting&hellip; page will reload in 20 seconds.</p>";
+    } else {
+        html += "<h3>Update FAILED</h3>";
+        html += "<p>" + String(Update.errorString()) + "</p>";
+        html += "<p><a href='/update'>Try again</a></p>";
+    }
+    html += "</div></body></html>";
+    config_server.send(ok ? 200 : 500, "text/html", html);
+
+    if (ok) {
+        // Flush TCP before we kill the radio — client must receive the page first.
+        config_server.client().flush();
+        delay(200);
+
+        // Turn off backlight and stop the display before restarting.
+        // On ESP32-S3 the RGB panel uses continuous GDMA; if a DMA transfer
+        // is in-flight when esp_restart() is called, the hardware can hang
+        // and the restart never completes — visible as the device freezing
+        // with the screen still lit after an OTA upload.
+        extern void Set_Backlight(uint8_t);
+        Set_Backlight(0);
+        extern esp_lcd_panel_handle_t panel_handle;
+        if (panel_handle) esp_lcd_panel_disp_on_off(panel_handle, false);
+        delay(200);
+
+        Serial.println("[OTA] Restarting...");
+        Serial.flush();
+        esp_restart();
+    }
+}
+
+void handle_ota_page() {
+    // Show running partition and free space so the user can sanity-check
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    const esp_partition_t* next    = esp_ota_get_next_update_partition(NULL);
+    char info[128];
+    snprintf(info, sizeof(info),
+             "Running: %s @ 0x%06lX (%lu KB) — Next: %s @ 0x%06lX",
+             running ? running->label : "?",
+             running ? (unsigned long)running->address : 0UL,
+             running ? (unsigned long)(running->size / 1024) : 0UL,
+             next    ? next->label : "none",
+             next    ? (unsigned long)next->address : 0UL);
+
+    String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
+    html += STYLE;
+    html += "<title>OTA Firmware Update</title></head><body><div class='container'>";
+    html += "<h2>Firmware Update</h2>";
+    html += "<p style='font-size:0.85em;color:#888'>" + String(info) + "</p>";
+    html += "<form method='POST' action='/update' enctype='multipart/form-data'>";
+    html += "<p>Select a <code>.bin</code> firmware file built for this board:</p>";
+    html += "<input type='file' name='firmware' accept='.bin' required style='margin-bottom:12px'><br>";
+    html += "<input type='submit' value='Upload &amp; Flash' "
+            "onclick=\"this.disabled=true;this.value='Flashing&hellip;';this.form.submit()\">";
+    html += "</form>";
+    html += "<p style='margin-top:20px'><a href='/'>&#8592; Back</a></p>";
+    html += "</div></body></html>";
+    config_server.send(200, "text/html", html);
 }
