@@ -26,6 +26,7 @@ bool test_mode = false;
 #include "compass_display.h"
 #include "ais_display.h"
 #include "unit_convert.h"
+#include "RTC_PCF85063.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -985,6 +986,11 @@ void setup() {
     ets_printf("*** I2C+expander done ***\r\n");
     Serial.println("I2C and IO expander initialized");
     Serial.flush();
+
+    // Initialize the on-board RTC (PCF85063) for local timekeeping
+    PCF85063_Init();
+    Serial.println("RTC (PCF85063) initialized");
+    Serial.flush();
     
     // Shared SPI bus initialization (used by ST7701 command SPI and SDSPI)
     {
@@ -1196,6 +1202,56 @@ void loop() {
             Set_Backlight(0);
             WiFi.setSleep(true);
             Serial.println("[SCREEN] Screen off — power saving active");
+        }
+    }
+    // -------------------------------------------------------------------------
+
+    // --- RTC ↔ SignalK sync --------------------------------------------------
+    // Every second, read the on-board RTC and format it as an ISO-8601 string
+    // into g_nav_datetime so the Position & Time screen always has a ticking
+    // clock, even between (or without) SignalK updates.
+    // When SignalK delivers a fresh navigation.datetime, we sync it to the RTC
+    // (at most once every 10 minutes to avoid excessive I2C writes).
+    {
+        static uint32_t last_rtc_read_ms   = 0;
+        static uint32_t last_rtc_sync_ms   = 0;
+        static char     prev_sk_datetime[32] = {0};
+        uint32_t now = millis();
+
+        // Sync SignalK → RTC when a new datetime string arrives (max every 10 min)
+        if (g_nav_datetime[0] != '\0' &&
+            strcmp(g_nav_datetime, prev_sk_datetime) != 0 &&
+            (now - last_rtc_sync_ms > 600000UL || last_rtc_sync_ms == 0))
+        {
+            // Parse ISO-8601 "2026-03-23T14:32:07.000Z"
+            int yr, mo, dy, hr, mn, sc;
+            if (sscanf(g_nav_datetime, "%d-%d-%dT%d:%d:%d", &yr, &mo, &dy, &hr, &mn, &sc) == 6) {
+                datetime_t rtc_time = {};
+                rtc_time.year   = (uint16_t)yr;
+                rtc_time.month  = (uint8_t)mo;
+                rtc_time.day    = (uint8_t)dy;
+                rtc_time.hour   = (uint8_t)hr;
+                rtc_time.minute = (uint8_t)mn;
+                rtc_time.second = (uint8_t)sc;
+                PCF85063_Set_All(rtc_time);
+                last_rtc_sync_ms = now;
+                Serial.printf("[RTC] Synced from SignalK: %04d-%02d-%02dT%02d:%02d:%02d\n",
+                              yr, mo, dy, hr, mn, sc);
+            }
+            strncpy(prev_sk_datetime, g_nav_datetime, 31);
+        }
+
+        // Read RTC every second and update g_nav_datetime
+        if (now - last_rtc_read_ms >= 1000) {
+            last_rtc_read_ms = now;
+            datetime_t t;
+            PCF85063_Read_Time(&t);
+            // Only use RTC time if it looks valid (year >= 2024)
+            if (t.year >= 2024) {
+                snprintf(g_nav_datetime, sizeof(g_nav_datetime),
+                         "%04d-%02d-%02dT%02d:%02d:%02dZ",
+                         t.year, t.month, t.day, t.hour, t.minute, t.second);
+            }
         }
     }
     // -------------------------------------------------------------------------
