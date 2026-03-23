@@ -245,6 +245,14 @@ String saved_signalk_ip = "";
 uint16_t saved_signalk_port = 0;
 // Hostname for the device (editable via Network Setup)
 String saved_hostname = "";
+// Connection type (WS / MQTT / MQTTS)
+ConnType conn_type = CONN_WS;
+// MQTT settings
+String mqtt_broker = "";
+uint16_t mqtt_port = 1883;
+String mqtt_user = "";
+String mqtt_pass = "";
+String mqtt_topic_prefix = "";
 // 10 SignalK paths: [screen][gauge] => idx = s*2+g
 String signalk_paths[NUM_SCREENS * 2];
 // Auto-scroll interval in seconds (0 = off)
@@ -350,6 +358,13 @@ void save_preferences(bool skip_screen_blobs = false) {
         preferences.putUShort("auto_scroll", auto_scroll_sec);
         preferences.putUShort("unit_system", (uint16_t)unit_system);
         preferences.putUShort("screen_off_tmout", screen_off_timeout_min);
+        // Connection type and MQTT settings
+        preferences.putUShort("conn_type", (uint16_t)conn_type);
+        preferences.putString("mqtt_broker", mqtt_broker);
+        preferences.putUShort("mqtt_port", mqtt_port);
+        preferences.putString("mqtt_user", mqtt_user);
+        preferences.putString("mqtt_pass", mqtt_pass);
+        preferences.putString("mqtt_prefix", mqtt_topic_prefix);
         for (int i = 0; i < NUM_SCREENS * 2; ++i) {
             String key = String("skpath_") + i;
             preferences.putString(key.c_str(), signalk_paths[i]);
@@ -546,6 +561,13 @@ void load_preferences() {
         auto_scroll_sec = preferences.getUShort("auto_scroll", 0);
         unit_system = (UnitSystem)preferences.getUShort("unit_system", (uint16_t)UNIT_NAUTICAL_METRIC);
         screen_off_timeout_min = preferences.getUShort("screen_off_tmout", 0);
+        // Load connection type and MQTT settings
+        conn_type = (ConnType)preferences.getUShort("conn_type", (uint16_t)CONN_WS);
+        mqtt_broker = preferences.getString("mqtt_broker", "");
+        mqtt_port = preferences.getUShort("mqtt_port", 1883);
+        mqtt_user = preferences.getString("mqtt_user", "");
+        mqtt_pass = preferences.getString("mqtt_pass", "");
+        mqtt_topic_prefix = preferences.getString("mqtt_prefix", "");
         // Load device settings
         buzzer_mode = (int)preferences.getUShort("buzzer_mode", (uint16_t)buzzer_mode);
         buzzer_cooldown_sec = preferences.getUShort("buzzer_cooldown", buzzer_cooldown_sec);
@@ -585,8 +607,14 @@ void load_preferences() {
             }
         }
     }
-    Serial.printf("[DEBUG] Loaded settings: ssid='%s' password='%s' signalk_ip='%s' port=%u\n",
-                  saved_ssid.c_str(), saved_password.c_str(), saved_signalk_ip.c_str(), saved_signalk_port);
+    static const char* conn_names[] = {"WS","WS","MQTT","MQTTS"}; // index 1 unused
+    Serial.printf("[DEBUG] Loaded settings: ssid='%s' signalk_ip='%s' port=%u conn=%s\n",
+                  saved_ssid.c_str(), saved_signalk_ip.c_str(), saved_signalk_port,
+                  conn_names[conn_type < 4 ? conn_type : 0]);
+    if (conn_type >= CONN_MQTT) {
+        Serial.printf("[DEBUG] MQTT broker='%s' port=%u user='%s' prefix='%s'\n",
+                      mqtt_broker.c_str(), mqtt_port, mqtt_user.c_str(), mqtt_topic_prefix.c_str());
+    }
 
     // Initialize defaults
     for (int s = 0; s < NUM_SCREENS; ++s) {
@@ -2082,8 +2110,29 @@ void handle_network_page() {
             "</div>";
     html += "<div id='scanResults' style='margin:0 0 10px 148px;display:none'></div>";
     html += "<div class='form-row'><label>Password:</label><input name='password' type='password' value='" + saved_password + "'></div>";
+
+    // Connection type selector
+    html += "<div class='form-row'><label>Connection:</label><select id='conn_type' name='conn_type' onchange='toggleConnFields()'>";
+    html += "<option value='0'" + String(conn_type==CONN_WS   ?" selected":"") + ">WebSocket</option>";
+    html += "<option value='2'" + String(conn_type==CONN_MQTT ?" selected":"") + ">MQTT</option>";
+    html += "<option value='3'" + String(conn_type==CONN_MQTTS?" selected":"") + ">MQTT (SSL)</option>";
+    html += "</select></div>";
+
+    // SignalK server fields (shown for WS)
+    html += "<div id='ws_fields'>";
     html += "<div class='form-row'><label>SignalK Server:</label><input name='signalk_ip' type='text' value='" + saved_signalk_ip + "'></div>";
     html += "<div class='form-row'><label>SignalK Port:</label><input name='signalk_port' type='number' value='" + String(saved_signalk_port) + "'></div>";
+    html += "</div>";
+
+    // MQTT fields (shown for MQTT/MQTTS)
+    html += "<div id='mqtt_fields'>";
+    html += "<div class='form-row'><label>MQTT Broker:</label><input name='mqtt_broker' type='text' value='" + mqtt_broker + "'></div>";
+    html += "<div class='form-row'><label>MQTT Port:</label><input name='mqtt_port' type='number' value='" + String(mqtt_port) + "'></div>";
+    html += "<div class='form-row'><label>MQTT User:</label><input name='mqtt_user' type='text' value='" + mqtt_user + "'></div>";
+    html += "<div class='form-row'><label>MQTT Password:</label><input name='mqtt_pass' type='password' value='" + mqtt_pass + "'></div>";
+    html += "<div class='form-row'><label>Topic Prefix:</label><input name='mqtt_prefix' type='text' value='" + mqtt_topic_prefix + "' placeholder='e.g. signalk/vessels/self/'></div>";
+    html += "</div>";
+
     html += "<div class='form-row'><label>ESP32 Hostname:</label><input name='hostname' type='text' value='" + saved_hostname + "'></div>";
     html += "<div style='text-align:center;margin-top:12px;'><button class='tab-btn' type='submit' style='padding:10px 18px;'>Save & Reboot</button></div>";
     html += "</form>";
@@ -2117,6 +2166,12 @@ void handle_network_page() {
               "}).catch(e=>{div.innerHTML='Scan failed: '+e;btn.disabled=false;btn.textContent='Scan';});"
             "}"
             "function pickSsid(s){document.getElementById('ssid').value=s;}"
+            "function toggleConnFields(){"
+              "var c=parseInt(document.getElementById('conn_type').value);"
+              "document.getElementById('ws_fields').style.display=(c<2)?'':'none';"
+              "document.getElementById('mqtt_fields').style.display=(c>=2)?'':'none';"
+            "}"
+            "toggleConnFields();"
             "</script>";
 
     html += "</div></div></body></html>";
@@ -2131,12 +2186,22 @@ void handle_save_wifi() {
         saved_signalk_ip = config_server.arg("signalk_ip");
         saved_signalk_port = config_server.arg("signalk_port").toInt();
         saved_hostname = config_server.arg("hostname");
+        conn_type = (ConnType)config_server.arg("conn_type").toInt();
+        mqtt_broker = config_server.arg("mqtt_broker");
+        mqtt_port = config_server.arg("mqtt_port").toInt();
+        mqtt_user = config_server.arg("mqtt_user");
+        mqtt_pass = config_server.arg("mqtt_pass");
+        mqtt_topic_prefix = config_server.arg("mqtt_prefix");
         save_preferences();
         Serial.println("[WiFi Config] SSID: " + saved_ssid);
-        Serial.println("[WiFi Config] Password: " + saved_password);
-        Serial.println("[WiFi Config] SignalK IP: " + saved_signalk_ip);
-        Serial.print("[WiFi Config] SignalK Port: ");
-        Serial.println(saved_signalk_port);
+        Serial.printf("[WiFi Config] ConnType: %d\n", conn_type);
+        if (conn_type >= CONN_MQTT) {
+            Serial.println("[WiFi Config] MQTT Broker: " + mqtt_broker);
+            Serial.printf("[WiFi Config] MQTT Port: %u\n", mqtt_port);
+        } else {
+            Serial.println("[WiFi Config] SignalK IP: " + saved_signalk_ip);
+            Serial.printf("[WiFi Config] SignalK Port: %u\n", saved_signalk_port);
+        }
         Serial.println("[WiFi Config] Hostname: " + saved_hostname);
         String html = "<html><head>";
         html += STYLE;
