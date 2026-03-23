@@ -1,5 +1,6 @@
 #include "signalk_config.h"
 #include "network_setup.h"
+#include "screen_config_c_api.h"
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <WebSocketsClient.h>
@@ -9,6 +10,10 @@
 #include "esp_task_wdt.h"
 #include <esp_heap_caps.h>
 #include <map>
+#include <set>
+#include <vector>
+
+extern "C" int ui_get_current_screen(void);
 
 // STL allocator that places all nodes in PSRAM instead of iRAM.
 template <typename T>
@@ -103,6 +108,9 @@ static const unsigned long RECONNECT_BASE_MS = 2000;
 static const unsigned long RECONNECT_MAX_MS = 60000;
 static const unsigned long MESSAGE_TIMEOUT_MS = 120000; // 120s without messages => reconnect (long enough for web page generation)
 static const unsigned long PING_INTERVAL_MS = 15000; // send periodic ping
+
+// Forward declaration for active-screen path collection
+static std::vector<String> get_active_screen_paths(int screen_1based);
 
 // Outgoing message queue (simple ring buffer)
 static SemaphoreHandle_t ws_queue_mutex = NULL;
@@ -405,9 +413,10 @@ static void wsEvent(WStype_t type, uint8_t * payload, size_t length) {
         last_message_time = millis();
         // reset backoff on successful connect
         current_backoff_ms = RECONNECT_BASE_MS;
-        // Build subscription JSON for ALL configured paths (gauge, number, dual, quad, gauge+num, graph)
+        // Subscribe only to paths for the active screen (+ background graph screens)
         // Manual string build avoids DynamicJsonDocument's 2048B iRAM alloc in the WS connect handler.
-        std::vector<String> all_conn_paths = get_all_signalk_paths();
+        int active_scr = ui_get_current_screen();  // 1-based
+        std::vector<String> all_conn_paths = get_active_screen_paths(active_scr);
         String out = "{\"context\":\"vessels.self\",\"subscribe\":[";
         bool first_conn = true;
         for (const String& p : all_conn_paths) {
@@ -468,7 +477,7 @@ static void wsEvent(WStype_t type, uint8_t * payload, size_t length) {
                     }
 
                     float value = val["value"].as<float>();
-                    
+
                     // Check if this path matches any gauge path
                     bool found_in_gauge = false;
                     for (int i = 0; i < TOTAL_PARAMS; i++) {
@@ -693,6 +702,58 @@ void schedule_signalk_ws_resume() {
     Serial.println("[SK] WS resume deferred until after screen rebuild");
 }
 
+// Helper: collect paths for active screen + background graph screens
+static std::vector<String> get_active_screen_paths(int screen_1based) {
+    std::set<String> seen_paths;
+    std::vector<String> result;
+    int active_idx = screen_1based - 1;
+    if (active_idx < 0) active_idx = 0;
+
+    auto merge = [&](const std::vector<String>& src) {
+        for (const String& p : src) {
+            if (p.length() > 0 && seen_paths.find(p) == seen_paths.end()) {
+                seen_paths.insert(p);
+                result.push_back(p);
+            }
+        }
+    };
+
+    // Active screen paths
+    merge(get_signalk_paths_for_screen(active_idx));
+
+    // Background graph screens still need data collection
+    for (int s = 0; s < NUM_SCREENS; s++) {
+        if (s == active_idx) continue;
+        if (screen_configs[s].display_type == DISPLAY_TYPE_GRAPH) {
+            merge(get_signalk_paths_for_screen(s));
+        }
+    }
+    return result;
+}
+
+// Subscribe to only the given screen's paths (+ background graph screens)
+void subscribe_to_active_screen(int screen_1based) {
+    std::vector<String> paths = get_active_screen_paths(screen_1based);
+
+    // First unsubscribe from everything
+    String unsub = "{\"context\":\"vessels.self\",\"unsubscribe\":[{\"path\":\"*\"}]}";
+    enqueue_outgoing(unsub);
+
+    // Then subscribe to only what we need
+    String out = "{\"context\":\"vessels.self\",\"subscribe\":[";
+    bool first = true;
+    for (const String& p : paths) {
+        if (!first) out += ",";
+        out += "{\"path\":\"";
+        out += p;
+        out += "\",\"period\":0}";
+        first = false;
+    }
+    out += "]}";
+    enqueue_outgoing(out);
+    Serial.printf("[SK] Subscribed to %d paths for screen %d\n", (int)paths.size(), screen_1based);
+}
+
 // Rebuild the subscription list from current configuration and (re)send it
 // over the active WebSocket connection if connected. If the WS is not
 // connected, the updated paths will be used when connection is (re)established.
@@ -702,14 +763,19 @@ void refresh_signalk_subscriptions() {
         signalk_paths[i] = get_signalk_path_by_index(i);
     }
     
-    // Get all unique paths including number and dual displays
-    std::vector<String> all_paths = get_all_signalk_paths();
+    // Subscribe to active screen paths (not all paths)
+    int active = ui_get_current_screen();
+    std::vector<String> all_paths = get_active_screen_paths(active);
 
     // Build subscription JSON manually to avoid DynamicJsonDocument allocating
     // 2048 bytes from internal iRAM on every save. DynamicJsonDocument uses malloc()
     // which draws from the internal heap; on a device with ~10 KB iRAM headroom this
     // fragments the heap and leaves the SDMMC DMA layer without a contiguous block.
     // Manual string building uses PSRAM-backed Arduino String objects instead.
+    // Unsubscribe first, then subscribe to active paths only.
+    String unsub = "{\"context\":\"vessels.self\",\"unsubscribe\":[{\"path\":\"*\"}]}";
+    enqueue_outgoing(unsub);
+
     String out = "{\"context\":\"vessels.self\",\"subscribe\":[";
     bool first = true;
     for (const String& path : all_paths) {

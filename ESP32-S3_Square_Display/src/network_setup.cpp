@@ -2428,6 +2428,66 @@ String get_signalk_path_by_index(int idx) {
     return "";
 }
 
+// Get SignalK paths needed by a single screen (0-based index)
+std::vector<String> get_signalk_paths_for_screen(int s) {
+    std::vector<String> paths;
+    std::set<String> unique;
+    if (s < 0 || s >= NUM_SCREENS) return paths;
+
+    auto add = [&](const char* p) {
+        String ps(p);
+        if (ps.length() > 0 && unique.find(ps) == unique.end()) {
+            unique.insert(ps);
+            paths.push_back(ps);
+        }
+    };
+
+    // Gauge paths (top = s*2, bottom = s*2+1)
+    add(signalk_paths[s * 2].c_str());
+    add(signalk_paths[s * 2 + 1].c_str());
+
+    switch (screen_configs[s].display_type) {
+        case DISPLAY_TYPE_GAUGE:
+            break;
+        case DISPLAY_TYPE_NUMBER:
+            add(screen_configs[s].number_path);
+            break;
+        case DISPLAY_TYPE_DUAL:
+            add(screen_configs[s].dual_top_path);
+            add(screen_configs[s].dual_bottom_path);
+            break;
+        case DISPLAY_TYPE_QUAD:
+            add(screen_configs[s].quad_tl_path);
+            add(screen_configs[s].quad_tr_path);
+            add(screen_configs[s].quad_bl_path);
+            add(screen_configs[s].quad_br_path);
+            break;
+        case DISPLAY_TYPE_GAUGE_NUMBER:
+            add(screen_configs[s].gauge_num_center_path);
+            break;
+        case DISPLAY_TYPE_GRAPH:
+            add(screen_configs[s].number_path);  // primary series uses number_path
+            add(screen_configs[s].graph_path_2);
+            break;
+        case DISPLAY_TYPE_COMPASS:
+            add(screen_configs[s].number_path);  // heading path
+            add(screen_configs[s].quad_bl_path); // BL extra field
+            add(screen_configs[s].quad_br_path); // BR extra field
+            break;
+        case DISPLAY_TYPE_POSITION:
+            add("navigation.position");
+            add("navigation.datetime");
+            break;
+        case DISPLAY_TYPE_AIS:
+            add("navigation.position");
+            add("navigation.datetime");
+            add("navigation.courseOverGroundTrue");
+            add("navigation.speedOverGround");
+            break;
+    }
+    return paths;
+}
+
 // Get all configured SignalK paths including gauges, number displays, and dual displays
 // Returns unique paths only
 std::vector<String> get_all_signalk_paths() {

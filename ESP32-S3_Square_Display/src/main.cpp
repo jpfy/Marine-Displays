@@ -1243,6 +1243,9 @@ void loop() {
                 if (bottom_needle) lower_needle_anim_cb(bottom_needle, last_bottom_angle[current_screen]);
                 last_seen_screen = current_screen;
 
+                // Re-subscribe to only the active screen's SignalK paths
+                subscribe_to_active_screen(current_screen);
+
                 // If a save happened while this screen was inactive, re-apply its visuals
                 // NOW while it is active so LVGL actually renders them.
                 int cs0 = current_screen - 1;

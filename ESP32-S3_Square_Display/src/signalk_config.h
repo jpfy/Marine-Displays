@@ -86,6 +86,8 @@ void schedule_signalk_ws_resume();
 extern volatile bool g_signalk_ws_resume_pending;
 // Rebuild and (re)send Signal K subscription list from current configuration
 void refresh_signalk_subscriptions();
+// Subscribe only to paths needed by the active screen (+ background graph screens)
+void subscribe_to_active_screen(int screen_1based);
 // Fetch metadata for all configured paths (gauges, number, dual displays)
 void fetch_all_metadata();
 

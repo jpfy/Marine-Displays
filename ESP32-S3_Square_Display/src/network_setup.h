@@ -58,6 +58,9 @@ uint16_t get_signalk_server_port();
 String get_signalk_path_by_index(int index);
 void set_signalk_path_by_index(int index, const String& path);
 
+// Get Signal K paths needed by a single screen (0-based index)
+std::vector<String> get_signalk_paths_for_screen(int screen_idx);
+
 // Get all configured Signal K paths (gauges, number displays, dual displays) - unique only
 std::vector<String> get_all_signalk_paths();
 
