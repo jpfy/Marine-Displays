@@ -19,6 +19,7 @@ extern float g_sensor_values[TOTAL_PARAMS];
 extern volatile float g_nav_latitude;
 extern volatile float g_nav_longitude;
 extern char g_nav_datetime[32];
+extern char g_sk_datetime[32];
 extern SemaphoreHandle_t sensor_mutex;
 
 // Metadata storage for each parameter

@@ -12,8 +12,6 @@
 #include <map>
 #include <set>
 #include <vector>
-#include <PubSubClient.h>
-#include <WiFiClientSecure.h>
 
 extern "C" int ui_get_current_screen(void);
 
@@ -78,6 +76,7 @@ String g_sensor_descriptions[TOTAL_PARAMS];
 volatile float g_nav_latitude  = NAN;
 volatile float g_nav_longitude = NAN;
 char g_nav_datetime[32]        = {0};
+char g_sk_datetime[32]         = {0};  // SK writes here; RTC sync reads it
 
 // Extended storage for paths beyond the gauge array (number displays, dual displays)
 // Uses PSRAM allocator to keep map nodes out of iRAM.
@@ -93,11 +92,6 @@ static String signalk_paths[TOTAL_PARAMS];  // Array of 10 paths
 static TaskHandle_t signalk_task_handle = NULL;
 static bool signalk_enabled = false;
 
-// MQTT client objects (only one active at a time)
-static WiFiClient       mqtt_wifi_client;
-static WiFiClientSecure mqtt_wifi_client_secure;
-static PubSubClient     mqtt_client;
-static bool             mqtt_connected_once = false;  // for initial subscribe
 // Set by HTTP handler (Core 1) before building/sending the config page.
 // signalk_task (Core 0) sees this, disconnects the WS, and suspends reconnects
 // until the flag is cleared on save — freeing the ~22KB WS receive buffer.
@@ -348,9 +342,6 @@ static void fetch_metadata_for_path(int index, const String &path) {
 
 // Fetch metadata for all configured paths (gauges, number displays, dual displays)
 void fetch_all_metadata() {
-    // Metadata REST API is only available on SignalK servers (WS mode)
-    if (conn_type >= CONN_MQTT) return;
-
     // Fetch for gauge paths (stored by index)
     for (int i = 0; i < TOTAL_PARAMS; i++) {
         if (signalk_paths[i].length() > 0) {
@@ -483,7 +474,7 @@ static void wsEvent(WStype_t type, uint8_t * payload, size_t length) {
                     // navigation.datetime arrives as an ISO-8601 string
                     if (strcmp(path, "navigation.datetime") == 0) {
                         const char* dt = val["value"].as<const char*>();
-                        if (dt) strncpy(g_nav_datetime, dt, 31);
+                        if (dt) { strncpy(g_sk_datetime, dt, 31); g_sk_datetime[31] = '\0'; }
                         continue;
                     }
 
@@ -514,103 +505,6 @@ static void wsEvent(WStype_t type, uint8_t * payload, size_t length) {
     }
 }
 
-// ── MQTT helpers ──────────────────────────────────────────────────────
-
-// Convert a dot-delimited path ("propulsion.port.revolutions") to a
-// slash-delimited MQTT topic, optionally prepended with mqtt_topic_prefix.
-static String path_to_topic(const String &path) {
-    String topic = mqtt_topic_prefix;
-    String p = path;
-    p.replace('.', '/');
-    topic += p;
-    return topic;
-}
-
-// Reverse: topic → dot-delimited path (strip prefix, replace / with .)
-static String topic_to_path(const String &topic) {
-    String path = topic;
-    if (mqtt_topic_prefix.length() > 0 && path.startsWith(mqtt_topic_prefix)) {
-        path = path.substring(mqtt_topic_prefix.length());
-    }
-    path.replace('/', '.');
-    return path;
-}
-
-// Subscribe (via MQTT) to all currently configured paths
-static void mqtt_subscribe_all() {
-    std::vector<String> all_paths = get_all_signalk_paths();
-    std::set<String> seen;
-    for (const String &p : all_paths) {
-        if (p.length() == 0 || seen.count(p)) continue;
-        seen.insert(p);
-        String topic = path_to_topic(p);
-        mqtt_client.subscribe(topic.c_str());
-        Serial.printf("[MQTT] Subscribed: %s\n", topic.c_str());
-    }
-    // Also subscribe to navigation.position and navigation.datetime
-    auto sub_nav = [&](const char* navPath) {
-        if (!seen.count(navPath)) {
-            String t = path_to_topic(navPath);
-            mqtt_client.subscribe(t.c_str());
-            Serial.printf("[MQTT] Subscribed: %s\n", t.c_str());
-        }
-    };
-    sub_nav("navigation.position");
-    sub_nav("navigation.datetime");
-}
-
-// PubSubClient callback — dispatches incoming MQTT messages to sensor values
-static void mqtt_callback(char* topic, byte* payload, unsigned int length) {
-    last_message_time = millis();
-
-    String topicStr(topic);
-    String path = topic_to_path(topicStr);
-
-    // Build a null-terminated copy of the payload
-    char buf[256];
-    size_t n = (length < sizeof(buf) - 1) ? length : sizeof(buf) - 1;
-    memcpy(buf, payload, n);
-    buf[n] = '\0';
-
-    // navigation.position — expect JSON {"latitude":x,"longitude":y}
-    if (path == "navigation.position") {
-        BasicJsonDocument<PsramAllocator> doc(256);
-        if (!deserializeJson(doc, buf)) {
-            if (doc.containsKey("latitude"))  g_nav_latitude  = doc["latitude"].as<float>();
-            if (doc.containsKey("longitude")) g_nav_longitude = doc["longitude"].as<float>();
-        }
-        return;
-    }
-    // navigation.datetime — expect ISO string
-    if (path == "navigation.datetime") {
-        strncpy(g_nav_datetime, buf, 31);
-        g_nav_datetime[31] = '\0';
-        return;
-    }
-
-    // Try to parse as JSON {"value": x} first, fall back to plain numeric
-    float value;
-    BasicJsonDocument<PsramAllocator> doc(256);
-    if (!deserializeJson(doc, buf) && doc.containsKey("value")) {
-        value = doc["value"].as<float>();
-    } else {
-        value = atof(buf);
-    }
-
-    // Dispatch to gauge slots or extended map (same logic as WS handler)
-    bool found_in_gauge = false;
-    for (int i = 0; i < TOTAL_PARAMS; i++) {
-        if (signalk_paths[i].length() > 0 && signalk_paths[i] == path) {
-            set_sensor_value(i, value);
-            found_in_gauge = true;
-        }
-    }
-    if (!found_in_gauge && sensor_mutex != NULL && xSemaphoreTake(sensor_mutex, pdMS_TO_TICKS(50))) {
-        extended_sensor_values[path] = value;
-        xSemaphoreGive(sensor_mutex);
-    }
-}
-
 // Helper: begin WS connection
 static void ws_begin_connection() {
     ws_client.begin(server_ip_str.c_str(), server_port_num, "/signalk/v1/stream");
@@ -618,16 +512,14 @@ static void ws_begin_connection() {
 }
 
 // FreeRTOS task for Signal K updates (runs on core 0)
-// Handles WS and MQTT/MQTTS connections depending on conn_type
+// FreeRTOS task for Signal K WebSocket updates (runs on core 0)
 static void signalk_task(void *parameter) {
-    const bool is_mqtt = (conn_type >= CONN_MQTT);
-    Serial.printf("Signal K task started (mode=%s)\n",
-                  is_mqtt ? "MQTT" : "WebSocket");
+    Serial.println("Signal K task started (WebSocket)");
     vTaskDelay(pdMS_TO_TICKS(500));
 
     while (signalk_enabled) {
-        // Config UI pause (WS only — MQTT buffers are tiny)
-        if (!is_mqtt && g_signalk_ws_paused) {
+        // Config UI pause
+        if (g_signalk_ws_paused) {
             if (ws_client.isConnected()) {
                 ws_client.disconnect();
                 current_backoff_ms = RECONNECT_BASE_MS;
@@ -643,81 +535,36 @@ static void signalk_task(void *parameter) {
             continue;
         }
 
-        if (is_mqtt) {
-            // ── MQTT path ──
-            unsigned long now = millis();
-            if (mqtt_client.connected()) {
-                mqtt_client.loop();
-                // Subscribe on first successful connect
-                if (!mqtt_connected_once) {
-                    mqtt_connected_once = true;
-                    mqtt_subscribe_all();
-                }
-            } else {
-                // Attempt (re)connect with backoff
-                if (next_reconnect_at == 0) {
-                    next_reconnect_at = now;
-                }
-                if (now >= next_reconnect_at) {
-                    Serial.printf("[MQTT] Connecting to %s:%u ...\n",
-                                  mqtt_broker.c_str(), mqtt_port);
-                    bool ok;
-                    String clientId = "esp32-" + String((uint32_t)ESP.getEfuseMac(), HEX);
-                    if (mqtt_user.length() > 0) {
-                        ok = mqtt_client.connect(clientId.c_str(),
-                                                 mqtt_user.c_str(),
-                                                 mqtt_pass.c_str());
-                    } else {
-                        ok = mqtt_client.connect(clientId.c_str());
-                    }
-                    if (ok) {
-                        Serial.println("[MQTT] Connected");
-                        current_backoff_ms = RECONNECT_BASE_MS;
-                        last_message_time = millis();
-                        mqtt_connected_once = false;  // trigger subscribe
-                    } else {
-                        Serial.printf("[MQTT] Connect failed rc=%d\n",
-                                      mqtt_client.state());
-                        unsigned int jitter = (esp_random() & 0x7FF) % 1000;
-                        next_reconnect_at = now + current_backoff_ms + jitter;
-                        current_backoff_ms = min(current_backoff_ms * 2,
-                                                 RECONNECT_MAX_MS);
-                    }
-                }
+        // CRITICAL: ws_client.loop() may fire wsEvent() which sets
+        // last_message_time = millis(). We MUST sample `now` AFTER loop()
+        // so that `now - last_message_time` doesn't underflow to ~4 billion.
+        ws_client.loop();
+        flush_outgoing();
+
+        unsigned long now = millis();
+
+        if (ws_client.isConnected()) {
+            if (now - last_message_time >= PING_INTERVAL_MS) {
+                ws_client.sendPing();
+            }
+            if (now - last_message_time >= MESSAGE_TIMEOUT_MS) {
+                Serial.println("Signal K: connection idle timeout, forcing disconnect");
+                ws_client.disconnect();
+                unsigned int jitter = (esp_random() & 0x7FF) % 1000;
+                next_reconnect_at = now + current_backoff_ms + jitter;
+                last_reconnect_attempt = now;
+                current_backoff_ms = min(current_backoff_ms * 2, RECONNECT_MAX_MS);
             }
         } else {
-            // ── WebSocket path ──
-            // CRITICAL: ws_client.loop() may fire wsEvent() which sets
-            // last_message_time = millis(). We MUST sample `now` AFTER loop()
-            // so that `now - last_message_time` doesn't underflow to ~4 billion.
-            ws_client.loop();
-            flush_outgoing();
-
-            unsigned long now = millis();
-
-            if (ws_client.isConnected()) {
-                if (now - last_message_time >= PING_INTERVAL_MS) {
-                    ws_client.sendPing();
-                }
-                if (now - last_message_time >= MESSAGE_TIMEOUT_MS) {
-                    Serial.println("Signal K: connection idle timeout, forcing disconnect");
-                    ws_client.disconnect();
-                    unsigned int jitter = (esp_random() & 0x7FF) % 1000;
-                    next_reconnect_at = now + current_backoff_ms + jitter;
-                    last_reconnect_attempt = now;
-                    current_backoff_ms = min(current_backoff_ms * 2, RECONNECT_MAX_MS);
-                }
-            } else {
-                if (next_reconnect_at == 0) {
-                    next_reconnect_at = now + current_backoff_ms;
-                }
-                if (now >= next_reconnect_at) {
-                    ws_begin_connection();
-                    last_reconnect_attempt = now;
-                    unsigned int jitter = (esp_random() & 0x7FF) % 1000;
-                    next_reconnect_at = now + current_backoff_ms + jitter;
-                    current_backoff_ms = min(current_backoff_ms * 2, RECONNECT_MAX_MS);
-                }
+            if (next_reconnect_at == 0) {
+                next_reconnect_at = now + current_backoff_ms;
+            }
+            if (now >= next_reconnect_at) {
+                ws_begin_connection();
+                last_reconnect_attempt = now;
+                unsigned int jitter = (esp_random() & 0x7FF) % 1000;
+                next_reconnect_at = now + current_backoff_ms + jitter;
+                current_backoff_ms = min(current_backoff_ms * 2, RECONNECT_MAX_MS);
             }
         }
 
@@ -761,26 +608,9 @@ void enable_signalk(const char* ssid, const char* password, const char* server_i
         return;
     }
 
-    if (conn_type >= CONN_MQTT) {
-        // ── MQTT / MQTTS setup ──
-        Serial.printf("Signal K: Starting MQTT client (%s)...\n",
-                      conn_type == CONN_MQTTS ? "TLS" : "plain");
-        if (conn_type == CONN_MQTTS) {
-            mqtt_wifi_client_secure.setInsecure();  // accept self-signed certs
-            mqtt_client.setClient(mqtt_wifi_client_secure);
-        } else {
-            mqtt_client.setClient(mqtt_wifi_client);
-        }
-        mqtt_client.setServer(mqtt_broker.c_str(), mqtt_port);
-        mqtt_client.setCallback(mqtt_callback);
-        mqtt_client.setBufferSize(512);  // allow larger payloads
-        mqtt_connected_once = false;
-    } else {
-        // ── WS setup ──
-        Serial.println("Signal K: Starting WebSocket client...");
-        ws_begin_connection();
-        ws_client.setReconnectInterval(0);
-    }
+    Serial.println("Signal K: Starting WebSocket client...");
+    ws_begin_connection();
+    ws_client.setReconnectInterval(0);
 
     // Create task to pump connection loop
     xTaskCreatePinnedToCore(signalk_task, "SignalKWS", 8192, NULL, 3, &signalk_task_handle, 0);
@@ -796,11 +626,7 @@ void disable_signalk() {
         vTaskDelete(signalk_task_handle);
         signalk_task_handle = NULL;
     }
-    if (conn_type >= CONN_MQTT) {
-        mqtt_client.disconnect();
-    } else {
-        ws_client.disconnect();
-    }
+    ws_client.disconnect();
     Serial.println("Signal K disabled");
 }
 
@@ -815,8 +641,6 @@ bool is_signalk_ws_paused() {
 // before the HTTP handler builds and sends the large config page.
 void pause_signalk_ws() {
     if (!signalk_enabled) return;
-    // MQTT buffers are tiny — no need to pause for iRAM
-    if (conn_type >= CONN_MQTT) return;
     // Cancel any pending or in-flight resume so the signalk_task doesn't
     // unpause itself while we're serving config fragments.
     g_signalk_ws_resume_when_ready = false;
@@ -896,9 +720,6 @@ static std::vector<String> get_active_screen_paths(int screen_1based) {
 
 // Subscribe to only the given screen's paths (+ background graph screens)
 void subscribe_to_active_screen(int screen_1based) {
-    // MQTT subscribes to all paths at connect time — no per-screen filtering needed
-    if (conn_type >= CONN_MQTT) return;
-
     std::vector<String> paths = get_active_screen_paths(screen_1based);
 
     // First unsubscribe from everything
@@ -929,14 +750,6 @@ void refresh_signalk_subscriptions() {
         signalk_paths[i] = get_signalk_path_by_index(i);
     }
 
-    // For MQTT, resubscribe to all paths (disconnect+reconnect will trigger mqtt_subscribe_all)
-    if (conn_type >= CONN_MQTT) {
-        if (mqtt_client.connected()) {
-            mqtt_subscribe_all();
-        }
-        return;
-    }
-    
     // Subscribe to active screen paths (not all paths)
     int active = ui_get_current_screen();
     std::vector<String> all_paths = get_active_screen_paths(active);
