@@ -1,7 +1,7 @@
 #include "unit_convert.h"
 #include <math.h>
 
-UnitSystem unit_system = UNIT_NAUTICAL_METRIC;  // default: knots / °C / bar
+UnitSystem unit_system = UNIT_NAUTICAL_METRIC;  // default: knots / °C / mbar
 
 static const char* const system_names[] = {
     "Metric",
@@ -76,14 +76,14 @@ float convert_unit(float si_value, const String& si_unit, String& out_unit) {
         return c;
     }
 
-    // Pressure: Pa → bar or PSI
+    // Pressure: Pa → mbar or PSI
     if (si_unit == "Pa") {
         if (uses_psi()) {
             out_unit = "PSI";
             return si_value * 0.000145038f;
         }
-        out_unit = "bar";
-        return si_value / 100000.0f;
+        out_unit = "mbar";
+        return si_value / 100.0f;
     }
 
     // Ratio → %
