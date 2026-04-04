@@ -124,7 +124,7 @@ void rotate_needle(int16_t angle) {
         lv_anim_set_var(&a, ui_Needle);
         lv_anim_set_exec_cb(&a, needle_anim_cb);
         lv_anim_set_values(&a, current_needle_angle, angle);
-        lv_anim_set_time(&a, 500);  // 500ms smooth animation
+        lv_anim_set_time(&a, 200);  // 200ms smooth animation
         lv_anim_set_path_cb(&a, lv_anim_path_linear);
         lv_anim_start(&a);
         current_needle_angle = angle;
@@ -138,7 +138,7 @@ void rotate_lower_needle(int16_t angle) {
         lv_anim_set_var(&a, ui_Lower_Needle);
         lv_anim_set_exec_cb(&a, lower_needle_anim_cb);
         lv_anim_set_values(&a, current_lower_needle_angle, angle);
-        lv_anim_set_time(&a, 500);  // 500ms smooth animation
+        lv_anim_set_time(&a, 200);  // 200ms smooth animation
         lv_anim_set_path_cb(&a, lv_anim_path_linear);
         lv_anim_start(&a);
         current_lower_needle_angle = angle;
@@ -170,7 +170,7 @@ static void animate_generic_needle(lv_obj_t* needle, int16_t &last_angle, int16_
     lv_anim_set_var(&a, needle);
     lv_anim_set_exec_cb(&a, is_lower ? lower_needle_anim_cb : needle_anim_cb);
     lv_anim_set_values(&a, last_angle, new_angle);
-    lv_anim_set_time(&a, 500);
+    lv_anim_set_time(&a, 200);
     lv_anim_set_path_cb(&a, lv_anim_path_linear);
     lv_anim_start(&a);
 
@@ -376,7 +376,7 @@ void test_move_gauge(int screen, int gauge, int angle) {
             lv_anim_set_var(&a, top_needles[screen]);
             lv_anim_set_exec_cb(&a, needle_anim_cb);
             lv_anim_set_values(&a, last_top_angle[idx], angle);
-            lv_anim_set_time(&a, 500);
+            lv_anim_set_time(&a, 200);
             lv_anim_set_path_cb(&a, lv_anim_path_linear);
             lv_anim_start(&a);
             last_top_angle[idx] = angle;
@@ -391,7 +391,7 @@ void test_move_gauge(int screen, int gauge, int angle) {
             lv_anim_set_var(&a, bottom_needles[screen]);
             lv_anim_set_exec_cb(&a, lower_needle_anim_cb);
             lv_anim_set_values(&a, last_bottom_angle[idx], angle);
-            lv_anim_set_time(&a, 500);
+            lv_anim_set_time(&a, 200);
             lv_anim_set_path_cb(&a, lv_anim_path_linear);
             lv_anim_start(&a);
             last_bottom_angle[idx] = angle;
@@ -576,6 +576,9 @@ void loop() {
                 if (top_needle) needle_anim_cb(top_needle, last_top_angle[current_screen]);
                 if (bottom_needle) lower_needle_anim_cb(bottom_needle, last_bottom_angle[current_screen]);
                 last_seen_screen = current_screen;
+
+                // Re-subscribe to only the new screen's SignalK paths
+                subscribe_to_active_screen(current_screen);
             }
 
             update_needles_for_screen(current_screen);
