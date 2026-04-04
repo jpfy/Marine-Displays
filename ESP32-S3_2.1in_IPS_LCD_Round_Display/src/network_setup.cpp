@@ -575,13 +575,17 @@ void load_preferences() {
             if (SD_MMC.exists(sdpath)) {
                 File f = SD_MMC.open(sdpath, FILE_READ);
                 if (f) {
+                    memset(&screen_configs[s], 0, sizeof(ScreenConfig)); // zero-fill first for forward-compat
                     size_t got = f.read((uint8_t *)&screen_configs[s], sizeof(ScreenConfig));
                     Serial.printf("[SD LOAD] Read '%s' -> %u bytes (expected %u)\n", sdpath, (unsigned)got, (unsigned)sizeof(ScreenConfig));
                     f.close();
-                    if (got != sizeof(ScreenConfig)) {
-                        Serial.printf("[SD LOAD] Size mismatch for '%s', restoring defaults\n", sdpath);
+                    if (got > sizeof(ScreenConfig) || got == 0) {
+                        Serial.printf("[SD LOAD] Invalid size for '%s', restoring defaults\n", sdpath);
                         memset(&screen_configs[s], 0, sizeof(ScreenConfig));
                         continue;
+                    }
+                    if (got < sizeof(ScreenConfig)) {
+                        Serial.printf("[SD LOAD] Migrating old config '%s' (%u -> %u bytes), new fields zeroed\n", sdpath, (unsigned)got, (unsigned)sizeof(ScreenConfig));
                     }
                     // Validate loaded config
                     bool valid = true;

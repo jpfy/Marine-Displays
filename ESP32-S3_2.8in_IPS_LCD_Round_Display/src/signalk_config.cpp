@@ -305,8 +305,8 @@ static void signalk_task(void *parameter) {
             }
             if (now >= next_reconnect_at) {
                 Serial.println("Signal K: attempting reconnect...");
-                // re-init client
-                ws_client.begin(server_ip_str.c_str(), server_port_num, "/signalk/v1/stream");
+                // re-init client; subscribe=none prevents server firehosing all data
+                ws_client.begin(server_ip_str.c_str(), server_port_num, "/signalk/v1/stream?subscribe=none");
                 ws_client.onEvent(wsEvent);
                 last_reconnect_attempt = now;
                 // schedule next if this fails
@@ -358,7 +358,8 @@ void enable_signalk(const char* ssid, const char* password, const char* server_i
     Serial.println("Signal K: Starting WebSocket client...");
 
     // Initialize websocket client
-    ws_client.begin(server_ip_str.c_str(), server_port_num, "/signalk/v1/stream");
+    // subscribe=none prevents server from firehosing all data on connect
+    ws_client.begin(server_ip_str.c_str(), server_port_num, "/signalk/v1/stream?subscribe=none");
     ws_client.onEvent(wsEvent);
     // We'll manage reconnection with backoff ourselves
     ws_client.setReconnectInterval(0);
