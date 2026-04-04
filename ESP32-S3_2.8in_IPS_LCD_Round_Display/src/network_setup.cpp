@@ -1,6 +1,7 @@
 // ...existing code...
 
 #include "gauge_config.h"
+#include "version.h"
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
@@ -1158,6 +1159,7 @@ void handle_root() {
     html += "<button class='tab-btn' onclick=\"location.href='/assets'\">Assets</button>";
     html += "<button class='tab-btn' onclick=\"location.href='/device'\">Device Settings</button>";
     html += "</div>"; // root-actions
+    html += "<div style='text-align:center;margin-top:18px;font-size:0.8em;color:#888;'>Firmware: " + String(FW_VERSION) + "</div>";
     html += "</div>"; // tab-content
     html += "</div></body></html>";
     config_server.send(200, "text/html", html);

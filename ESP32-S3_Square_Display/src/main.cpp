@@ -26,6 +26,7 @@ bool test_mode = false;
 #include "compass_display.h"
 #include "ais_display.h"
 #include "unit_convert.h"
+#include "version.h"
 #include "RTC_PCF85063.h"
 #ifdef __cplusplus
 extern "C" {
@@ -976,7 +977,8 @@ void setup() {
     delay(500);
 
     ets_printf("*** Serial.begin done ***\r\n");
-    Serial.println("\n\n=== ESP32 Round Display Starting ===");
+    Serial.println("\n\n=== ESP32 Square Display Starting ===");
+    Serial.printf("Firmware version: %s\n", FW_VERSION);
     Serial.flush();
     
     // I2C and IO expander already initialized above; re-assert safe state after delay

@@ -16,6 +16,7 @@ bool test_mode = false;
 #include "needle_style.h"
 #include "gauge_number_display.h"
 #include "unit_convert.h"
+#include "version.h"
 
 // Apply saved screen visuals (backgrounds, icons, display type) after ui_init()
 extern bool apply_all_screen_visuals();
@@ -410,7 +411,8 @@ void setup() {
     Serial.begin(115200);
     delay(500);
     
-    Serial.println("\n\n=== ESP32 Round Display Starting ===");
+    Serial.println("\n\n=== ESP32 2.8in Round Display Starting ===");
+    Serial.printf("Firmware version: %s\n", FW_VERSION);
     Serial.flush();
     
     // I2C and IO expander
